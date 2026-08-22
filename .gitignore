@@ -1,0 +1,33 @@
+# --- Python (desktop/backend) ---
+__pycache__/
+*.py[oc]
+*.egg-info/
+.venv/
+.pytest_cache/
+# NOTE: uv.lock is intentionally NOT ignored — it must be committed
+# for reproducible Python dependency resolution.
+
+# --- Node / Vite (desktop/frontend, future mobile/receiver) ---
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# --- Editor / OS ---
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+
+# --- Logs ---
+*.log
+npm-debug.log*
+
+# --- Android (future mobile/receiver) ---
+*.iml
+.gradle/
+local.properties
+.cxx/
+captures/
+build/

@@ -1,0 +1,46 @@
+.status-screen {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  font-family: system-ui, sans-serif;
+  background: #0b0f14;
+  color: #e6e6e6;
+}
+
+.status-screen h1 {
+  letter-spacing: 0.1em;
+  margin-bottom: 1.5rem;
+}
+
+.label {
+  margin: 0;
+  color: #9aa4af;
+}
+
+.indicator {
+  margin: 0;
+  font-size: 1.5rem;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.indicator .dot {
+  font-size: 1.1rem;
+}
+
+.indicator.online {
+  color: #3ddc84;
+}
+
+.indicator.offline {
+  color: #ff5c5c;
+}
+
+.indicator.checking {
+  color: #f5c542;
+}
