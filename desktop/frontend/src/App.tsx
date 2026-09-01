@@ -2,11 +2,18 @@ import { useEffect, useState } from 'react'
 import './App.css'
 
 type BackendStatus = 'checking' | 'online' | 'offline'
+type HardwareStatus = 'checking' | 'connected' | 'disconnected'
 
 const BACKEND_HEALTH_URL = 'http://localhost:8000/health'
+const HARDWARE_STATUS_URL = 'http://localhost:8000/hardware/status'
+const HARDWARE_PING_URL = 'http://localhost:8000/hardware/ping'
 
 function App() {
   const [status, setStatus] = useState<BackendStatus>('checking')
+  const [hardwareStatus, setHardwareStatus] = useState<HardwareStatus>('checking')
+  const [port, setPort] = useState('')
+  const [pinging, setPinging] = useState(false)
+  const [lastResponse, setLastResponse] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -17,18 +24,47 @@ function App() {
         return response.json()
       })
       .then((data) => {
-        if (!cancelled) {
-          setStatus(data.status === 'ok' ? 'online' : 'offline')
-        }
+        if (!cancelled) setStatus(data.status === 'ok' ? 'online' : 'offline')
       })
       .catch(() => {
         if (!cancelled) setStatus('offline')
+      })
+
+    fetch(HARDWARE_STATUS_URL)
+      .then((response) => response.json())
+      .then((data) => {
+        if (cancelled) return
+        setPort(data.port ?? '')
+        setHardwareStatus(data.connected ? 'connected' : 'disconnected')
+      })
+      .catch(() => {
+        if (!cancelled) setHardwareStatus('disconnected')
       })
 
     return () => {
       cancelled = true
     }
   }, [])
+
+  const handlePing = async () => {
+    setPinging(true)
+    try {
+      const response = await fetch(HARDWARE_PING_URL, { method: 'POST' })
+      const data = await response.json()
+      if (data.success) {
+        setLastResponse(data.response)
+        setHardwareStatus('connected')
+      } else {
+        setLastResponse(`ERROR: ${data.error}`)
+        setHardwareStatus('disconnected')
+      }
+    } catch {
+      setLastResponse('ERROR: request failed')
+      setHardwareStatus('disconnected')
+    } finally {
+      setPinging(false)
+    }
+  }
 
   return (
     <main className="status-screen">
@@ -40,6 +76,31 @@ function App() {
         {status === 'online' && 'ONLINE'}
         {status === 'offline' && 'OFFLINE'}
       </p>
+
+      <section className="hardware-panel">
+        <h2>ESP32 HARDWARE</h2>
+        <p className="label">Connection:</p>
+        <p className={`indicator ${hardwareStatus}`}>
+          <span className="dot" aria-hidden="true">●</span>
+          {hardwareStatus === 'checking' && 'CHECKING...'}
+          {hardwareStatus === 'connected' && 'CONNECTED'}
+          {hardwareStatus === 'disconnected' && 'DISCONNECTED'}
+        </p>
+        <p className="label">
+          Port: <span className="value">{port || '—'}</span>
+        </p>
+        <p className="label">
+          Device: <span className="value">ESP32-S3 N16R8</span>
+        </p>
+        <button className="ping-button" onClick={handlePing} disabled={pinging}>
+          {pinging ? 'PINGING...' : 'PING ESP32'}
+        </button>
+        {lastResponse !== null && (
+          <p className="label">
+            Last response: <span className="value">{lastResponse}</span>
+          </p>
+        )}
+      </section>
     </main>
   )
 }

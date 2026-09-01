@@ -45,14 +45,16 @@ project's non-negotiable security invariants — is documented in
 
 ## Current Development Phase
 
-**Phase 1 — Project Foundation.** Only a health-check path exists:
+**Phase 2D — ESP32 Serial Communication.** Two paths exist:
 
 ```
 React frontend → HTTP → FastAPI backend → GET /health → response displayed in React
+React frontend → HTTP → FastAPI backend → pyserial → COM3 → ESP32-S3 → PONG
 ```
 
-No encryption, packetization, optical communication, ESP32 firmware,
-camera processing, or AI is implemented yet.
+The ESP32-S3 currently runs only a minimal PING/PONG debug firmware (not
+the final optical protocol). No LED control, optical communication,
+encryption, camera processing, or AI is implemented yet.
 
 ## Technology Stack
 
@@ -84,7 +86,7 @@ CipherBeam-AI/
 ├── mobile/
 │   └── receiver/   React Native (not yet initialized)
 ├── firmware/
-│   └── esp32/      ESP32-S3 firmware (not yet implemented)
+│   └── esp32/      ESP32-S3 firmware (PING/PONG debug link only so far)
 ├── protocol/       Specification, schemas, test vectors (not yet written)
 ├── ai/             Datasets, training, models, evaluation (not yet implemented)
 ├── tests/          unit, integration, protocol, crypto, hardware

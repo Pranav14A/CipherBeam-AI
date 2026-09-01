@@ -44,3 +44,59 @@
 .indicator.checking {
   color: #f5c542;
 }
+
+.indicator.connected {
+  color: #3ddc84;
+}
+
+.indicator.disconnected {
+  color: #ff5c5c;
+}
+
+.hardware-panel {
+  margin-top: 2.5rem;
+  padding: 1.25rem 1.75rem;
+  border: 1px solid #2a323c;
+  border-radius: 8px;
+  min-width: 260px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.hardware-panel h2 {
+  margin: 0 0 0.5rem;
+  font-size: 0.95rem;
+  letter-spacing: 0.08em;
+  color: #9aa4af;
+}
+
+.hardware-panel .indicator {
+  font-size: 1.1rem;
+}
+
+.hardware-panel .value {
+  color: #e6e6e6;
+  font-weight: 600;
+}
+
+.ping-button {
+  margin-top: 0.6rem;
+  padding: 0.5rem 1rem;
+  background: #1b2733;
+  color: #e6e6e6;
+  border: 1px solid #3a4551;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.95rem;
+  align-self: flex-start;
+}
+
+.ping-button:hover:not(:disabled) {
+  background: #24333f;
+}
+
+.ping-button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
