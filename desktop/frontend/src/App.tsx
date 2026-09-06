@@ -3,10 +3,12 @@ import './App.css'
 
 type BackendStatus = 'checking' | 'online' | 'offline'
 type HardwareStatus = 'checking' | 'connected' | 'disconnected'
+type LedState = 'on' | 'off'
 
 const BACKEND_HEALTH_URL = 'http://localhost:8000/health'
 const HARDWARE_STATUS_URL = 'http://localhost:8000/hardware/status'
 const HARDWARE_PING_URL = 'http://localhost:8000/hardware/ping'
+const HARDWARE_LED_URL = 'http://localhost:8000/hardware/led'
 
 function App() {
   const [status, setStatus] = useState<BackendStatus>('checking')
@@ -14,6 +16,9 @@ function App() {
   const [port, setPort] = useState('')
   const [pinging, setPinging] = useState(false)
   const [lastResponse, setLastResponse] = useState<string | null>(null)
+  const [redState, setRedState] = useState<LedState>('off')
+  const [greenState, setGreenState] = useState<LedState>('off')
+  const [ledMessage, setLedMessage] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -66,6 +71,28 @@ function App() {
     }
   }
 
+  const toggleLed = async (led: 'red' | 'green') => {
+    const current = led === 'red' ? redState : greenState
+    const nextState: LedState = current === 'on' ? 'off' : 'on'
+    try {
+      const response = await fetch(HARDWARE_LED_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ led, state: nextState }),
+      })
+      const data = await response.json()
+      if (data.success) {
+        if (led === 'red') setRedState(nextState)
+        else setGreenState(nextState)
+        setLedMessage(`${led.toUpperCase()} ${nextState.toUpperCase()}`)
+      } else {
+        setLedMessage(`ERROR: ${data.error}`)
+      }
+    } catch {
+      setLedMessage('ERROR: request failed')
+    }
+  }
+
   return (
     <main className="status-screen">
       <h1>CIPHERBEAM AI</h1>
@@ -98,6 +125,21 @@ function App() {
         {lastResponse !== null && (
           <p className="label">
             Last response: <span className="value">{lastResponse}</span>
+          </p>
+        )}
+
+        <h2 className="led-heading">LED CONTROL</h2>
+        <div className="led-buttons">
+          <button className="ping-button" onClick={() => toggleLed('red')}>
+            RED: {redState.toUpperCase()}
+          </button>
+          <button className="ping-button" onClick={() => toggleLed('green')}>
+            GREEN: {greenState.toUpperCase()}
+          </button>
+        </div>
+        {ledMessage !== null && (
+          <p className="label">
+            LED status: <span className="value">{ledMessage}</span>
           </p>
         )}
       </section>

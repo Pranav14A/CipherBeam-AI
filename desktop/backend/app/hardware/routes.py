@@ -1,17 +1,11 @@
-"""CipherBeam AI — Hardware routes (Party A, Phase 2D)
+"""CipherBeam AI — Hardware routes (Party A)
 
-Exposes the ESP32 debug serial link over HTTP for the React frontend.
-Deliberately minimal: only enough to prove
-React -> FastAPI -> pyserial -> COM3 -> ESP32-S3 -> PONG works.
-
-No LED control, no optical protocol, no encryption here yet.
-
-Design note: hardware-unavailable conditions (ESP32 unplugged, port busy,
-timeout, etc.) are expected, ordinary outcomes for a physical device link —
-they're returned as HTTP 200 with `success: false` / `connected: false` and
-a structured `error` code, not as HTTP error statuses. Only a genuinely
-unexpected server-side bug would surface as a 500.
+Phase 2D: GET /hardware/status, POST /hardware/ping.
+Phase 5 (original roadmap): POST /hardware/led — strictly digital ON/OFF
+GPIO control via the ESP32. No PWM, no optical protocol here.
 """
+
+from enum import Enum
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.concurrency import run_in_threadpool
@@ -23,11 +17,6 @@ router = APIRouter(prefix="/hardware", tags=["hardware"])
 
 
 def get_serial_manager(request: Request) -> SerialManager:
-    """FastAPI dependency — reads the shared SerialManager off app.state.
-
-    Tests override this dependency (see test_hardware_routes.py) to inject a
-    mock manager without touching a real serial port.
-    """
     return request.app.state.serial_manager
 
 
@@ -45,38 +34,54 @@ class PingResponse(BaseModel):
 
 
 @router.get("/status", response_model=StatusResponse)
-async def hardware_status(
-    manager: SerialManager = Depends(get_serial_manager),
-) -> StatusResponse:
-    """Reports whether the COM port is currently open/reachable.
-
-    This checks the serial link itself (attempting a lazy connect if needed)
-    — it does not send an application-level command to the firmware. Use
-    POST /hardware/ping to confirm the firmware is actually responding.
-    """
+async def hardware_status(manager: SerialManager = Depends(get_serial_manager)) -> StatusResponse:
     try:
         await run_in_threadpool(manager.connect)
     except SerialManagerError as exc:
-        return StatusResponse(
-            connected=False,
-            port=manager.port,
-            baud_rate=manager.baud_rate,
-            error=exc.code.value,
-        )
-    return StatusResponse(
-        connected=manager.is_connected(),
-        port=manager.port,
-        baud_rate=manager.baud_rate,
-    )
+        return StatusResponse(connected=False, port=manager.port, baud_rate=manager.baud_rate, error=exc.code.value)
+    return StatusResponse(connected=manager.is_connected(), port=manager.port, baud_rate=manager.baud_rate)
 
 
 @router.post("/ping", response_model=PingResponse)
-async def hardware_ping(
-    manager: SerialManager = Depends(get_serial_manager),
-) -> PingResponse:
-    """Sends PING to the ESP32 over COM3 and expects PONG back."""
+async def hardware_ping(manager: SerialManager = Depends(get_serial_manager)) -> PingResponse:
     try:
         response = await run_in_threadpool(manager.request, "PING", "PONG")
     except SerialManagerError as exc:
         return PingResponse(success=False, error=exc.code.value)
     return PingResponse(success=True, response=response)
+
+
+# --- Phase 5: LED control (digital ON/OFF only) ---
+
+
+class LedColor(str, Enum):
+    RED = "red"
+    GREEN = "green"
+
+
+class LedState(str, Enum):
+    ON = "on"
+    OFF = "off"
+
+
+class LedRequest(BaseModel):
+    led: LedColor
+    state: LedState
+
+
+class LedResponse(BaseModel):
+    success: bool
+    error: str | None = None
+
+
+@router.post("/led", response_model=LedResponse)
+async def hardware_led(
+    payload: LedRequest, manager: SerialManager = Depends(get_serial_manager)
+) -> LedResponse:
+    """Sends LED_<COLOR>_<STATE> (e.g. LED_RED_ON) and expects OK back."""
+    command = f"LED_{payload.led.value.upper()}_{payload.state.value.upper()}"
+    try:
+        await run_in_threadpool(manager.request, command, "OK")
+    except SerialManagerError as exc:
+        return LedResponse(success=False, error=exc.code.value)
+    return LedResponse(success=True)
