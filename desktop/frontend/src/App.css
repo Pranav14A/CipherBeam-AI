@@ -109,3 +109,51 @@
   display: flex;
   gap: 0.75rem;
 }
+
+.message-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 12px;
+  margin-top: 6px;
+  border: 1px solid #444;
+  border-radius: 6px;
+  background: #111;
+  color: #fff;
+  font-size: 16px;
+}
+
+.message-input:focus {
+  outline: none;
+  border-color: #777;
+}
+
+.message-input:disabled {
+  opacity: 0.6;
+}
+
+.character-count {
+  margin: 6px 0 12px;
+  font-size: 12px;
+  opacity: 0.6;
+  text-align: right;
+}
+
+.transmit-button {
+  width: 100%;
+  padding: 12px;
+  border: none;
+  border-radius: 6px;
+  background: #fff;
+  color: #000;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.transmit-button:hover:not(:disabled) {
+  opacity: 0.85;
+}
+
+.transmit-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
