@@ -96,9 +96,8 @@ private fun PermissionScreen(onRequest: () -> Unit) {
 private fun ReceiverScreen() {
 
     /*
-     * The active OpticalDecoder is now owned by CameraPreview.
-     * MainActivity receives immutable snapshots through
-     * onDecoderSnapshot.
+     * The active OpticalDecoder is owned by CameraPreview.
+     * MainActivity receives immutable decoder snapshots.
      */
     var decoderState by remember {
         mutableStateOf(
@@ -109,6 +108,16 @@ private fun ReceiverScreen() {
                 completedMessage = null
             )
         )
+    }
+
+    /*
+     * Keep the last successfully decoded message visible even
+     * after the decoder returns to WAITING_FOR_START.
+     *
+     * This is UI-only state and does not affect decoding.
+     */
+    var lastReceivedMessage by remember {
+        mutableStateOf<String?>(null)
     }
 
     var debug by remember {
@@ -161,6 +170,14 @@ private fun ReceiverScreen() {
 
             onDecoderSnapshot = { snapshot ->
                 decoderState = snapshot
+
+                /*
+                 * Capture a completed message before the decoder
+                 * moves back to WAITING_FOR_START.
+                 */
+                snapshot.completedMessage?.let { completed ->
+                    lastReceivedMessage = completed
+                }
             }
         )
 
@@ -271,7 +288,7 @@ private fun ReceiverScreen() {
 
             Text(
                 text =
-                    decoderState.completedMessage
+                    lastReceivedMessage
                         ?: decoderState.message.ifEmpty {
                             "Waiting for GREEN START…"
                         },
