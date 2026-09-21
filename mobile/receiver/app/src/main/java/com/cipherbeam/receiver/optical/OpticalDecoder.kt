@@ -160,9 +160,17 @@ class OpticalDecoder(
 
             State.MESSAGE_COMPLETE -> {
                 /*
-                 * Ignore all optical samples until the application
-                 * explicitly resets the decoder.
+                 * The message has been decoded, but GREEN END may still
+                 * be physically ON. Do not reset while that end marker
+                 * is active, otherwise the same GREEN pulse can be
+                 * mistaken for a new GREEN START.
+                 *
+                 * Once GREEN turns OFF, re-arm the decoder for the next
+                 * transmission.
                  */
+                if (!greenOn) {
+                    reset()
+                }
             }
         }
 
