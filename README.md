@@ -1,120 +1,394 @@
-# CipherBeam-AI — Mobile Receiver
+# CipherBeam-AI
 
-## Current Project Status
+> An offline optical communication system using visible-light transmission, ESP32 hardware, and a smartphone camera receiver.
 
-**Project:** CipherBeam-AI  
-**Component:** Android Mobile Receiver  
-**Current Phase:** Phase 8 — Optical Signal Detection  
-**Next Phase:** Phase 9 — Packet Specification  
-**Status:** Phase 8 implementation is working in repeated physical tests.
+CipherBeam-AI is an experimental **LiFi-like / Optical Wireless Communication (OWC)** system designed to transmit digital messages through visible light without relying on Wi-Fi, Bluetooth, or the Internet.
+
+The current prototype uses:
+
+- ESP32-S3 as the optical transmitter controller
+- Red LED as the data carrier
+- Green LED as the control/synchronization channel
+- Android phone camera as the optical receiver
+- Kotlin + CameraX for mobile image analysis
+- FastAPI + React on the desktop side for transmitter control
+- USB serial communication between desktop and ESP32
+
+The project is being developed incrementally, with the optical communication pipeline established first and packet security/reliability being added afterward.
 
 ---
 
-# 1. Mobile Receiver Goal
+# 1. Project Vision
 
-The Android application acts as the optical receiver for CipherBeam-AI.
-
-The phone camera observes two optical channels:
-
-- **GREEN LED** → control / frame synchronization
-- **RED LED** → data bits
-
-The Android pipeline is:
+The long-term CipherBeam-AI pipeline is:
 
 ```text
-CameraX Preview
-        +
-CameraX ImageAnalysis
-        ↓
-Live Camera Frames
-        ↓
-RED + GREEN Detection
-        ↓
-Spatial LED Localization
-        ↓
-Temporal Signal Processing
-        ↓
+Desktop / Sender
+      ↓
+Message
+      ↓
+Packetization
+      ↓
+Encryption
+      ↓
+CRC / Reliability
+      ↓
+FastAPI
+      ↓
+USB Serial
+      ↓
+ESP32-S3
+      ↓
+RED + GREEN LEDs
+      ↓
+Visible Light
+      ↓
+Android Camera
+      ↓
+CameraX
+      ↓
+Optical Signal Detection
+      ↓
 Optical Decoder
+      ↓
+Packet Parser
+      ↓
+CRC Verification
+      ↓
+Decryption
+      ↓
+Received Message
+```
+
+The current implementation has reached the optical transmission/receiving stage. Packetization, cryptography, CRC, retransmission, and AI-based decoding are future layers.
+
+---
+
+# 2. Core Design
+
+CipherBeam-AI uses two visible-light channels:
+
+| Channel | Purpose |
+|---|---|
+| GREEN | Control / synchronization |
+| RED | Binary data |
+
+The optical layer currently works as:
+
+```text
+GREEN START
+     ↓
+200 ms guard
+     ↓
+RED binary payload
+     ↓
+200 ms end guard
+     ↓
+GREEN END
+```
+
+The system intentionally separates:
+
+1. **Physical optical framing**
+2. **Logical packet structure**
+3. **Cryptography**
+4. **Reliability**
+
+This allows later protocol layers to be developed without redesigning the basic LED transport.
+
+---
+
+# 3. Repository Structure
+
+Current high-level structure:
+
+```text
+CipherBeam-AI/
+│
+├── desktop/
+│   ├── backend/
+│   │   └── ...
+│   │
+│   └── frontend/
+│       └── ...
+│
+├── mobile/
+│   └── receiver/
+│       ├── app/
+│       │   └── src/
+│       │       └── main/
+│       │           └── java/
+│       │               └── com/
+│       │                   └── cipherbeam/
+│       │                       └── receiver/
+│       │                           ├── camera/
+│       │                           ├── optical/
+│       │                           └── ...
+│       │
+│       └── README.md
+│
+├── firmware/
+│   └── ...
+│
+└── README.md
+```
+
+The exact repository contents may evolve as development continues.
+
+---
+
+# 4. Hardware
+
+## ESP32
+
+Current board:
+
+```text
+YD-ESP32-23 2022 V1.3
+ESP32-S3-N16R8
+```
+
+Important board characteristics:
+
+- ESP32-S3
+- 16 MB Flash
+- 8 MB OPI PSRAM
+- CH343 USB-UART bridge
+- Native USB-OTG interface
+
+The working USB serial connection is:
+
+```text
+USB-UART / CH343
         ↓
-Decoded Plaintext Message
+COM3
+        ↓
+FastAPI / pyserial
+        ↓
+ESP32-S3
 ```
 
-The current receiver is intentionally implemented without:
-
-- OpenCV
-- Internet/network communication
-- AI/ML decoding
-- Bluetooth
-- Wi-Fi communication
-
----
-
-# 2. Android Project Configuration
-
-## Build stack
-
-- Android Gradle Plugin: `8.5.2`
-- Kotlin: `2.0.0`
-- Compose BOM: `2024.06.00`
-- CameraX: `1.3.4`
-- compileSdk: `34`
-- targetSdk: `34`
-- minSdk: `33`
-- Java/Kotlin JVM target: `17`
-
-Android Studio Gradle JVM is configured to use **JVM 21**, because the project's Gradle version does not support Java 25.
-
----
-
-# 3. Current Camera Pipeline
-
-CameraX provides:
+Arduino IDE board configuration:
 
 ```text
-Preview
-ImageAnalysis
-```
+Board:
+ESP32S3 Dev Module
 
-`ImageAnalysis` continuously supplies YUV camera frames.
+USB CDC On Boot:
+Disabled
 
-The receiver extracts chroma information from the camera image and calculates RED/GREEN colour scores.
+Flash Size:
+16MB
 
-The current implementation uses YUV-derived colour information rather than relying on raw RGB conversion.
-
----
-
-# 4. Optical Channels
-
-## GREEN — Control Channel
-
-GREEN is used for:
-
-- Frame START
-- Frame END
-- Synchronization
-
-GREEN is not currently used for payload data.
-
-## RED — Data Channel
-
-RED carries the actual binary payload.
-
-```text
-RED ON  = 1
-RED OFF = 0
-```
-
-Each bit currently lasts approximately:
-
-```text
-200 ms
+PSRAM:
+OPI PSRAM
 ```
 
 ---
 
-# 5. Physical Optical Protocol — Phase 7
+# 5. LED Hardware
 
-The current physical frame is:
+Current optical transmitter hardware:
+
+- 1 × Red 5 mm LED
+- 1 × Green 5 mm LED
+- 2 × 220 Ω resistors
+- ESP32-S3 GPIO pins
+
+Wiring:
+
+```text
+ESP32 GPIO4
+    ↓
+220 Ω
+    ↓
+RED LED anode
+
+RED LED cathode
+    ↓
+GND
+```
+
+and:
+
+```text
+ESP32 GPIO5
+    ↓
+220 Ω
+    ↓
+GREEN LED anode
+
+GREEN LED cathode
+    ↓
+GND
+```
+
+The LEDs are driven directly from ESP32 GPIO.
+
+Current channel assignment:
+
+```text
+GPIO4 → RED
+GPIO5 → GREEN
+```
+
+---
+
+# 6. Desktop Architecture
+
+The desktop side contains:
+
+```text
+React Frontend
+      ↓
+FastAPI Backend
+      ↓
+pyserial
+      ↓
+USB / CH343
+      ↓
+ESP32-S3
+```
+
+The desktop application is responsible for:
+
+- message input
+- optical transmission controls
+- hardware status
+- hardware ping
+- serial communication
+- transmitter control
+
+The backend currently exposes endpoints including:
+
+```text
+GET /health
+GET /hardware/status
+GET /hardware/ping
+```
+
+The backend uses the ESP32 serial connection through `pyserial`.
+
+---
+
+# 7. Starting the Desktop Backend
+
+From the repository root:
+
+```powershell
+cd desktop\backend
+uv run uvicorn app.main:app --reload
+```
+
+Expected:
+
+```text
+Uvicorn running on http://127.0.0.1:8000
+```
+
+Health check:
+
+```powershell
+curl http://127.0.0.1:8000/health
+```
+
+Important:
+
+> Keep Arduino Serial Monitor closed while the FastAPI backend is using COM3.
+
+---
+
+# 8. ESP32 Serial Communication
+
+ESP32 communication was established before optical transmission.
+
+The communication path is:
+
+```text
+React
+  ↓
+FastAPI
+  ↓
+pyserial
+  ↓
+COM3
+  ↓
+ESP32-S3
+  ↓
+Response
+  ↑
+```
+
+A React → FastAPI → pyserial → ESP32 → response round trip was physically tested.
+
+The ESP32 supports the required serial commands used by the desktop backend.
+
+---
+
+# 9. Optical Transmitter
+
+The transmitter uses a non-blocking `millis()` state machine.
+
+Current logical states include:
+
+```text
+TX_IDLE
+TX_GREEN_START
+TX_START_GUARD
+TX_DATA
+TX_END_GUARD
+TX_GREEN_END
+```
+
+The transmitter sequence is:
+
+```text
+RED OFF
+GREEN OFF
+
+GREEN ON
+    600 ms
+
+GREEN OFF
+    200 ms guard
+
+RED DATA
+    8-bit ASCII
+    MSB first
+    200 ms / bit
+
+RED OFF
+    200 ms end guard
+
+GREEN ON
+    600 ms
+
+GREEN OFF
+RED OFF
+
+TRANSMIT_DONE
+```
+
+During the RED data section:
+
+```text
+GREEN = OFF
+RED = current data bit
+```
+
+During GREEN framing:
+
+```text
+RED = OFF
+```
+
+Both LEDs are therefore not intentionally ON at the same time.
+
+---
+
+# 10. Current Optical Protocol
+
+## Physical Frame
 
 ```text
 IDLE
@@ -132,29 +406,34 @@ GREEN END
 IDLE
 ```
 
-Timing:
+Timing constants:
 
 ```text
-GREEN START       = 600 ms
-START GUARD       = 200 ms
-RED BIT           = 200 ms
-END GUARD         = 200 ms
-GREEN END         = 600 ms
+GREEN_START_DURATION = 600 ms
+GREEN_END_DURATION   = 600 ms
+GUARD_DURATION       = 200 ms
+BIT_DURATION         = 200 ms
 ```
 
-RED data uses:
+## Data Encoding
+
+Current Phase 7/8 payload encoding:
 
 ```text
-8-bit ASCII
+1 = RED ON
+0 = RED OFF
+```
+
+Each character:
+
+```text
+8 bits
 MSB first
-200 ms per bit
 ```
 
 Example:
 
 ```text
-HELLO
-
 H = 01001000
 E = 01000101
 L = 01001100
@@ -162,116 +441,116 @@ L = 01001100
 O = 01001111
 ```
 
-The current optical layer does not yet contain CRC, encryption, retransmission, or Algorithm ID.
+There is currently no inter-bit gap.
 
 ---
 
-# 6. Optical Decoder
+# 11. Android Receiver
 
-Main file:
+The receiver is a Kotlin Android application.
+
+Current technology:
 
 ```text
-app/src/main/java/com/cipherbeam/receiver/optical/OpticalDecoder.kt
+Kotlin 2.0.0
+Android Gradle Plugin 8.5.2
+CameraX 1.3.4
+Jetpack Compose
+compileSdk 34
+targetSdk 34
+minSdk 33
+Java target 17
 ```
 
-Current decoder states:
+The receiver uses:
 
 ```text
-WAITING_FOR_START
-START_DETECTED
-WAITING_FOR_DATA
-RECEIVING_PAYLOAD
-MESSAGE_COMPLETE
+CameraX Preview
++
+CameraX ImageAnalysis
 ```
 
-The decoder:
+The phone camera provides the optical signal.
 
-1. Detects sustained GREEN.
-2. Waits for GREEN to turn OFF.
-3. Waits for the 200 ms START guard.
-4. Samples RED in 200 ms windows.
-5. Converts RED windows into bits.
-6. Groups bits into 8-bit bytes.
-7. Accepts printable ASCII.
-8. Detects GREEN END.
-9. Produces a completed plaintext message.
+No network connection is required for optical reception.
 
-The decoder also contains a small RED temporal-stability filter to reduce short RED flicker before the state machine consumes the signal.
+---
 
-The latest decoder stability change is:
+# 12. Android Receiver Architecture
 
 ```text
-Commit: ac8fc25
-Message: Improve optical decoder stability
+CameraX
+   ↓
+ImageAnalysis
+   ↓
+RedLedAnalyzer
+   ↓
+YUV colour analysis
+   ↓
+GREEN localization
+   ↓
+RED localization
+   ↓
+Signal trackers
+   ↓
+OpticalDecoder
+   ↓
+Decoded plaintext
+   ↓
+Android UI
+```
+
+Main mobile areas:
+
+```text
+camera/
+optical/
+```
+
+Important files include:
+
+```text
+camera/RedLedAnalyzer.kt
+optical/SignalProcessing.kt
+optical/OpticalDecoder.kt
 ```
 
 ---
 
-# 7. Signal Processing
+# 13. Colour Detection
 
-Main files:
+The receiver analyzes YUV camera data.
 
-```text
-app/src/main/java/com/cipherbeam/receiver/optical/SignalProcessing.kt
-app/src/main/java/com/cipherbeam/receiver/camera/RedLedAnalyzer.kt
-```
-
-## RED detection
-
-The RED score is derived from YUV chroma:
+RED score is derived from the chroma channels:
 
 ```text
-rawR = (V - U) / 255
+RED score = (V - U) / 255
 ```
 
-The value is constrained to a safe range.
+The signal is constrained before being used.
 
-The RED tracker maintains:
+GREEN uses a separate colour score.
 
-- baseline
-- envelope
-- threshold
-- ON/OFF state
+The system maintains independent trackers for RED and GREEN.
 
-Current typical values observed during successful testing:
+Each tracker maintains:
 
 ```text
-RED baseline       ≈ 0.04
-RED threshold      ≈ 0.094–0.096
-Strong RED         ≈ 0.10–0.33
-Background RED     ≈ 0.02–0.055
+baseline
+envelope
+threshold
+isOn
 ```
 
-These are observed diagnostic values, not protocol constants.
+This allows the receiver to adapt to the camera/background instead of using one fixed absolute brightness threshold.
 
 ---
 
-# 8. GREEN Detection
+# 14. Spatial LED Localization
 
-GREEN is detected separately from RED.
+The receiver does not assume that the LEDs stay at a fixed camera coordinate.
 
-The current implementation uses:
-
-- YUV colour information
-- coarse spatial grid search
-- temporal signal behaviour
-- spatial margin
-
-GREEN detection is also used to re-anchor RED localization.
-
-This prevents the receiver from assuming that the RED LED remains at one fixed screen coordinate.
-
----
-
-# 9. LED Spatial Localization
-
-The receiver does not use a single fixed ROI.
-
-Instead:
-
-## GREEN
-
-A coarse grid is searched for the strongest GREEN candidate.
+GREEN localization uses a coarse grid search.
 
 Current grid:
 
@@ -279,36 +558,88 @@ Current grid:
 5 × 5
 ```
 
-## RED
+GREEN acts as the primary control/reference signal.
 
-RED is searched locally around the previous RED position.
+RED localization searches around the previously detected RED position.
 
-The RED search can move as the phone/camera view changes.
+The RED location can therefore move as the phone or LED position changes.
 
-The current implementation allows the RED localization to follow the LED across substantially different parts of the camera frame.
+The current implementation has successfully followed LEDs across substantially different areas of the camera frame.
 
 ---
 
-# 10. Phase 8 Testing
+# 15. Temporal Signal Processing
 
-Phase 8 has been physically tested using the Android receiver and the physical ESP32 + LED transmitter.
+Short RED flicker can occur because of:
 
-Observed camera analysis rate:
+- camera frame timing
+- sensor noise
+- exposure changes
+- LED/camera geometry
+- small localization changes
+
+The current decoder includes a short RED temporal stability filter.
+
+The goal is to prevent extremely short RED changes from becoming false optical bits while preserving the 200 ms protocol timing.
+
+The current implementation should not be changed casually while physical tests are passing.
+
+---
+
+# 16. Phase 7 — Basic Phone Receiver
+
+Phase 7 established the basic physical optical link.
+
+Completed:
+
+- Android project
+- CameraX preview
+- camera analysis
+- RED detection
+- GREEN detection
+- optical synchronization
+- 8-bit ASCII decoding
+- physical transmitter → phone testing
+- persistent decoded-message UI
+
+The basic system was able to transmit messages such as:
 
 ```text
-approximately 22–28 FPS
+HELLO
+TEST
 ```
 
-Successful tests included:
+from the optical transmitter to the Android receiver.
 
-- repeated message transmission
-- `HELLO`
-- `TEST`
-- moving the phone vertically from top to bottom
-- changing the LED location within the camera frame
-- RED/ GREEN detection across different screen areas
+---
 
-Recent diagnostic logs showed:
+# 17. Phase 8 — Optical Signal Detection
+
+Phase 8 improved the receiver substantially.
+
+Implemented:
+
+- adaptive RED baseline
+- adaptive GREEN baseline
+- RED signal tracking
+- GREEN signal tracking
+- GREEN spatial localization
+- RED spatial localization
+- temporal RED stability filtering
+- frame-to-frame localization
+- diagnostic logging
+- optical decoder synchronization
+- moving LED tests
+
+Recent physical tests showed approximately:
+
+```text
+22–28 FPS
+```
+
+Camera analysis.
+
+Typical observed RED values:
 
 ```text
 RED ON:
@@ -316,190 +647,153 @@ rawR ≈ 0.10–0.33
 
 RED OFF:
 rawR ≈ 0.02–0.055
-
-GREEN:
-GREEN=1 while RED=0
 ```
 
-The receiver successfully decoded the repeated tests.
+Typical threshold:
 
-There was an occasional isolated decoding error such as:
+```text
+≈ 0.094–0.096
+```
+
+These values are diagnostic observations, not frozen protocol specifications.
+
+---
+
+# 18. Phase 8 Physical Validation
+
+Recent testing included repeated transmissions with the phone moved:
+
+```text
+top → bottom
+```
+
+and across different areas of the camera frame.
+
+The receiver continued to decode successfully.
+
+GREEN and RED remained distinguishable.
+
+An isolated run produced:
 
 ```text
 hELLO
 ```
 
-but subsequent repeated transmissions passed successfully.
-
-Therefore Phase 8 is considered **working and sufficiently stable for the current demo milestone**.
-
-The system is not being claimed to have 100% optical reliability yet.
-
----
-
-# 11. Important Optical Behaviour
-
-Large camera-angle changes can sometimes affect RED detection because of optical geometry and LED viewing angle.
-
-Small angle changes have generally worked.
-
-Moving the phone position across the camera frame has worked successfully in recent tests.
-
-The current strategy is therefore:
-
-> Do not continuously modify the optical detector based on isolated failures while the repeated physical tests are passing.
-
-The detector should remain frozen while development moves to the packet layer.
-
----
-
-# 12. Current UI Behaviour
-
-The Android UI keeps the last successfully received message visible.
-
-The important logic is:
+instead of:
 
 ```text
+HELLO
+```
+
+but subsequent repeated transmissions passed.
+
+Therefore:
+
+> Phase 8 is considered sufficiently functional for the current demo milestone, while not being claimed as 100% reliable.
+
+The current strategy is to stop repeatedly tuning the optical detector and move to the protocol layer.
+
+---
+
+# 19. Current Diagnostics
+
+Diagnostic logging uses:
+
+```text
+CipherBeamDiag
+```
+
+Example fields:
+
+```text
+RY
+RU
+RV
+rawR
+GY
+GU
+GV
+rawG
+RED
+RBASE
+RTHR
+GREEN
+GBASE
+GTHR
+GLOC
+RLOC
+FPS
+```
+
+These are useful for investigating optical failures without changing the protocol.
+
+---
+
+# 20. Current Android UI
+
+The Android UI retains the last completed message.
+
+The basic behavior is:
+
+```text
+Decoder completes message
+        ↓
 completedMessage
-      ↓
+        ↓
 lastReceivedMessage
-      ↓
-UI continues displaying the last decoded message
+        ↓
+UI continues displaying message
 ```
 
-This prevents the message from disappearing immediately when the decoder returns to a waiting state.
+This prevents a successful message from disappearing immediately after the decoder returns to its waiting state.
 
 ---
 
-# 13. Current Architecture
+# 21. Protocol Layer — Current State
+
+The optical transport currently sends raw ASCII data.
+
+The next architecture is:
 
 ```text
-Android CameraX
+Application message
        ↓
-RedLedAnalyzer
+Packet
        ↓
-YUV colour analysis
+CRC
        ↓
-GREEN localization
+Encryption
        ↓
-RED localization
+Optical encoding
        ↓
-Signal trackers
-       ↓
-OpticalDecoder
-       ↓
-Plaintext message
+LED transmission
 ```
 
-The next architectural layer will be added after the optical decoder:
+Receiver:
 
 ```text
-OpticalDecoder
+LED signal
        ↓
-Packet Parser
+Optical decoding
        ↓
-CRC Verification
+Packet
+       ↓
+CRC verification
        ↓
 Decryption
        ↓
-Application Message
+Application message
 ```
+
+This separation is important because the optical layer should not need to understand cryptography.
 
 ---
 
-# 14. Current Git State
+# 22. Phase 9 — Packet Specification
 
-The mobile receiver uses:
+**Current next phase.**
 
-```text
-main = stable tested code
-dev  = active development
-```
-
-Latest mobile optical decoder commit:
-
-```text
-ac8fc25
-Improve optical decoder stability
-```
-
-The commit was pushed to both:
-
-```text
-origin/main
-origin/dev
-```
-
-Both branches were synchronized after merging:
-
-```text
-main → dev
-```
-
----
-
-# 15. Completed Mobile Work
-
-## Phase 7 — Basic Phone Camera Receiver
-
-Completed:
-
-- Android receiver project
-- CameraX integration
-- live camera preview
-- camera frame analysis
-- RED detection
-- GREEN detection
-- optical timing
-- basic message decoding
-- transmitter-to-phone physical testing
-- persistent decoded-message UI
-
-## Phase 8 — Optical Signal Detection
-
-Completed:
-
-- RED signal tracking
-- GREEN signal tracking
-- adaptive baseline
-- RED temporal stability filtering
-- GREEN spatial localization
-- RED spatial localization
-- moving LED localization
-- frame-to-frame signal tracking
-- physical repeated testing
-
----
-
-# 16. Not Implemented Yet
-
-The following are intentionally not implemented yet:
-
-```text
-Packet specification             ← NEXT
-Packet serialization/parsing
-CRC
-Encryption
-Security Profiles
-Algorithm ID
-Retransmission
-Reliability protocol
-OpenCV optimization
-AI pulse classification
-AI adaptive transmission
-Advanced camera controls
-Adaptive bitrate
-```
-
----
-
-# 17. Next Phase — Phase 9
-
-Phase 9 is **Packet Specification**.
-
-The purpose is to define the binary packet that will travel through the existing optical transport.
-
-Proposed initial structure:
+The proposed initial packet structure is:
 
 ```text
 ┌────────┬─────────┬────────┬────────┬─────────────┬───────┐
@@ -508,62 +802,275 @@ Proposed initial structure:
 └────────┴─────────┴────────┴────────┴─────────────┴───────┘
 ```
 
-This has not yet been implemented.
-
-Important distinction:
+Proposed meanings:
 
 ```text
-GREEN/RED optical framing
-        ≠
-logical packet framing
+SYNC
+    Logical packet synchronization marker
+
+VERSION
+    Packet/protocol version
+
+FLAGS
+    Security/profile/algorithm information
+
+LENGTH
+    Payload length
+
+PAYLOAD
+    Actual application data
+
+CRC
+    Packet integrity check
 ```
 
-The existing physical GREEN/RED protocol will remain the transport mechanism.
+Important:
 
-The packet will become the payload carried by that transport.
+> `SYNC` is a logical packet field. It is not a replacement for the physical GREEN/RED optical framing.
+
+The physical optical framing remains:
+
+```text
+GREEN START
+RED DATA
+GREEN END
+```
 
 ---
 
-# 18. Planned Development Order
+# 23. Planned FLAGS Structure
+
+The proposed FLAGS byte is reserved for future security metadata.
+
+Initial conceptual structure:
 
 ```text
-Phase 8
-Optical Signal Detection
-        ↓
-Phase 9
-Packet Specification
-        ↓
-Phase 10
-Packet Implementation
-        ↓
-Phase 11
-Cryptography
-        ↓
-Phase 12
-Security Profiles + Algorithm ID
-        ↓
-Phase 13
-CRC + Reliability + Retransmission
-        ↓
-Phase 14+
-Integration / optimization / AI
+bits 7–4:
+Security Profile
+
+bits 3–0:
+Algorithm ID
 ```
 
-The current priority is a reliable working demo rather than completing every advanced feature before the demo.
+Initial plaintext mode:
+
+```text
+FLAGS = 0x00
+```
+
+This allows the receiver to determine how to interpret a future encrypted packet without redesigning the packet format.
+
+The exact security-profile and algorithm assignments will be frozen during Phase 12.
 
 ---
 
-# 19. Development Rule
+# 24. Remaining Roadmap
 
-For future changes:
+The broader project roadmap is:
 
-1. Inspect the exact current file.
-2. Make one focused change.
-3. Build/test immediately.
-4. Report the test result.
-5. Commit only tested changes.
-6. Keep `main` stable.
-7. Develop new work on `dev`.
-8. Merge tested `dev` work into `main`.
+```text
+1. Repository and architecture                    DONE
+2. Desktop FastAPI foundation                     DONE
+3. Desktop React frontend foundation              DONE
+4. ESP32 USB serial communication                 DONE
+5. LED hardware control                            DONE
+6. Basic optical transmitter                      DONE
+7. Basic phone camera receiver                    DONE
+8. Optical signal detection                       DONE
+9. Protocol / packet specification                NEXT
+10. Packet implementation
+11. Cryptography
+12. Security Profiles + Algorithm ID
+13. CRC + reliability + retransmission
+14. Kotlin Android receiver integration
+15. OpenCV optimization
+16. AI pulse classification
+17. AI adaptive transmission
+18. Full integration
+19. Testing
+20. Performance optimization
+```
 
-Do not change optical detection parameters without a concrete failure pattern from physical testing.
+Phase 14 originally considered React Native, but the receiver direction has been changed to:
+
+```text
+Kotlin-only Android
+```
+
+---
+
+# 25. Demo Sprint Priority
+
+The immediate goal is a working end-to-end demo rather than completing every advanced feature before the demo.
+
+Priority order:
+
+```text
+Reliable optical link
+        ↓
+Packet
+        ↓
+CRC
+        ↓
+Encryption
+        ↓
+Full desktop ↔ ESP32 ↔ optical ↔ Android integration
+```
+
+Lower priority until the core demo works:
+
+```text
+AI pulse classification
+AI adaptive transmission
+Multiple advanced crypto modes
+Perfect edge-of-frame performance
+Adaptive bitrate
+Advanced OpenCV optimization
+```
+
+---
+
+# 26. Git Workflow
+
+The repository uses:
+
+```text
+main = stable tested code
+dev  = active development
+```
+
+Development workflow:
+
+```text
+dev
+ ↓
+implement
+ ↓
+build
+ ↓
+physical/software test
+ ↓
+commit
+ ↓
+push dev
+ ↓
+merge into main after validation
+ ↓
+push main
+```
+
+Avoid committing experimental changes directly to `main` unless intentionally doing so.
+
+---
+
+# 27. Important Recent Git History
+
+Relevant recent commits include:
+
+```text
+1eeecf6
+Complete Phase 2D ESP32 serial communication
+
+a780e02
+Complete Phase 5 LED hardware control
+
+2f57d51
+Update desktop optical transmission controls
+
+91bb700
+Fix receiver reset and retain decoded message
+
+f10c3f6
+Improve optical signal localization
+
+ac8fc25
+Improve optical decoder stability
+```
+
+The latest optical decoder change:
+
+```text
+ac8fc25
+```
+
+has been pushed to:
+
+```text
+origin/main
+origin/dev
+```
+
+The branches were synchronized using:
+
+```text
+main → dev
+```
+
+with a fast-forward merge.
+
+---
+
+# 28. Development Rules
+
+For future implementation:
+
+1. Inspect the exact current file before editing.
+2. Do not invent existing project APIs or structures.
+3. Make one focused change at a time.
+4. Prefer complete replacement files when a file needs substantial changes.
+5. Build immediately after changes.
+6. Perform practical physical testing where relevant.
+7. Only commit tested changes.
+8. Keep `main` stable.
+9. Use `dev` for active development.
+10. Do not tune optical thresholds without evidence from actual logs/tests.
+11. Do not introduce advanced architecture prematurely.
+12. Keep the physical optical protocol stable while implementing higher protocol layers.
+
+---
+
+# 29. Current Status Summary
+
+```text
+ESP32 serial communication        ✅
+LED hardware                      ✅
+Desktop transmitter               ✅
+Physical RED transmission          ✅
+Physical GREEN framing             ✅
+Android CameraX receiver           ✅
+RED detection                      ✅
+GREEN detection                    ✅
+Spatial localization               ✅
+Optical synchronization             ✅
+Plaintext decoding                 ✅
+Repeated physical testing          ✅
+
+Packet specification               ← CURRENT PHASE
+Packet implementation              ⏳
+CRC                                ⏳
+Encryption                         ⏳
+Security profiles                  ⏳
+Retransmission                     ⏳
+AI decoding                        ⏳
+Advanced optimization              ⏳
+```
+
+---
+
+# 30. Next Immediate Step
+
+Start **Phase 9 — Packet Specification**.
+
+Before writing packet implementation code:
+
+1. Freeze the packet fields.
+2. Freeze field sizes.
+3. Freeze byte ordering.
+4. Define valid payload length.
+5. Define packet validation rules.
+6. Define how malformed packets are rejected.
+7. Define the relationship between packet framing and optical framing.
+8. Document the final specification.
+9. Only then implement the packet serializer/parser in Phase 10.
+
+The current optical detection layer should remain unchanged unless new physical tests demonstrate a reproducible failure pattern.
