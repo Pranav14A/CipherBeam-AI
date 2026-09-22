@@ -1,7 +1,9 @@
 package com.cipherbeam.receiver.optical
+
 import android.util.Log
+
 /**
- * Phase 7 optical protocol decoder.
+ * Phase 8 optical protocol decoder.
  *
  * Physical channels:
  *
@@ -19,6 +21,18 @@ import android.util.Log
  *
  * RED OFF during the data section is a valid binary 0.
  * GREEN is the only signal that marks frame START and END.
+ *
+ * Phase 8 robustness:
+ *
+ * RED camera detection can briefly flicker when the phone angle
+ * changes or the camera exposure shifts.
+ *
+ * A short 50 ms temporal stability filter is therefore applied
+ * before RED samples enter the 200 ms bit window.
+ *
+ * This is intentionally much shorter than the 200 ms bit duration,
+ * so genuine bit transitions remain detectable while very short
+ * RED glitches are suppressed.
  */
 class OpticalDecoder(
     private val maxMessageLength: Int = 100
@@ -48,6 +62,15 @@ class OpticalDecoder(
          * accepting GREEN as a real control signal.
          */
         private const val GREEN_CONFIRM_SAMPLES = 3
+
+        /*
+         * RED must remain in the new state for this duration before
+         * the decoder accepts the transition.
+         *
+         * 50 ms is intentionally much shorter than the 200 ms
+         * optical bit duration.
+         */
+        private const val RED_STABILITY_DURATION_NS = 50_000_000L
     }
 
     private var state = State.WAITING_FOR_START
@@ -75,6 +98,19 @@ class OpticalDecoder(
 
     private var redOnSamples = 0
     private var redTotalSamples = 0
+
+    /*
+     * RED temporal stability filter.
+     *
+     * filteredRedOn is the RED state that is actually allowed
+     * into the 200 ms bit accumulator.
+     *
+     * A raw RED transition must remain present for
+     * RED_STABILITY_DURATION_NS before it is accepted.
+     */
+    private var filteredRedOn = false
+    private var redCandidateState: Boolean? = null
+    private var redCandidateStartNs: Long? = null
 
     /*
      * Completed 200 ms RED windows are temporarily held.
@@ -107,6 +143,10 @@ class OpticalDecoder(
         redOnSamples = 0
         redTotalSamples = 0
 
+        filteredRedOn = false
+        redCandidateState = null
+        redCandidateStartNs = null
+
         completedBitWindows.clear()
 
         currentByte = 0
@@ -114,7 +154,7 @@ class OpticalDecoder(
     }
 
     /**
-     * Feed one camera analysis sample into the Phase 7 decoder.
+     * Feed one camera analysis sample into the Phase 8 decoder.
      *
      * @param timestampNs camera frame timestamp
      * @param redOn detected RED optical state
@@ -125,6 +165,18 @@ class OpticalDecoder(
         redOn: Boolean,
         greenOn: Boolean
     ): Snapshot {
+
+        /*
+         * Stabilize RED before the state-specific decoder consumes it.
+         *
+         * GREEN handling remains unchanged because GREEN is used
+         * for frame synchronization rather than data bits.
+         */
+        val stableRedOn =
+            stabilizeRedState(
+                timestampNs = timestampNs,
+                rawRedOn = redOn
+            )
 
         when (state) {
 
@@ -145,7 +197,7 @@ class OpticalDecoder(
             State.WAITING_FOR_DATA -> {
                 handleWaitingForData(
                     timestampNs = timestampNs,
-                    redOn = redOn,
+                    redOn = stableRedOn,
                     greenOn = greenOn
                 )
             }
@@ -153,7 +205,7 @@ class OpticalDecoder(
             State.RECEIVING_PAYLOAD -> {
                 handleReceivingData(
                     timestampNs = timestampNs,
-                    redOn = redOn,
+                    redOn = stableRedOn,
                     greenOn = greenOn
                 )
             }
@@ -175,6 +227,65 @@ class OpticalDecoder(
         }
 
         return snapshot()
+    }
+
+    /**
+     * Stabilize the RED signal against short camera-frame glitches.
+     *
+     * A raw RED transition must remain continuously present for
+     * RED_STABILITY_DURATION_NS before the filtered RED state changes.
+     *
+     * This prevents short RED flicker from consuming samples in the
+     * wrong 200 ms bit window.
+     */
+    private fun stabilizeRedState(
+        timestampNs: Long,
+        rawRedOn: Boolean
+    ): Boolean {
+
+        /*
+         * No transition is currently pending.
+         *
+         * The raw state already matches the filtered state.
+         */
+        if (rawRedOn == filteredRedOn) {
+            redCandidateState = null
+            redCandidateStartNs = null
+
+            return filteredRedOn
+        }
+
+        /*
+         * A new candidate transition has started.
+         */
+        if (redCandidateState != rawRedOn) {
+            redCandidateState = rawRedOn
+            redCandidateStartNs = timestampNs
+
+            return filteredRedOn
+        }
+
+        val candidateStart =
+            redCandidateStartNs ?: run {
+                redCandidateStartNs = timestampNs
+                return filteredRedOn
+            }
+
+        /*
+         * Accept the transition only after the new RED state has
+         * remained stable long enough.
+         */
+        if (
+            timestampNs - candidateStart >=
+            RED_STABILITY_DURATION_NS
+        ) {
+            filteredRedOn = rawRedOn
+
+            redCandidateState = null
+            redCandidateStartNs = null
+        }
+
+        return filteredRedOn
     }
 
     /**
@@ -236,6 +347,16 @@ class OpticalDecoder(
 
         greenCandidateStartNs = null
         greenCandidateSamples = 0
+
+        /*
+         * Start each transmission with a clean RED temporal filter.
+         *
+         * The optical protocol guarantees RED is OFF during GREEN
+         * and during the 200 ms start guard.
+         */
+        filteredRedOn = false
+        redCandidateState = null
+        redCandidateStartNs = null
     }
 
     /**
@@ -372,7 +493,10 @@ class OpticalDecoder(
                  * 100 printable characters × 8 bits,
                  * plus one possible end-guard window.
                  */
-                if (completedBitWindows.size > (maxMessageLength * 8 + 1)) {
+                if (
+                    completedBitWindows.size >
+                    (maxMessageLength * 8 + 1)
+                ) {
                     reset()
                     return
                 }
@@ -390,12 +514,6 @@ class OpticalDecoder(
         redTotalSamples++
     }
 
-    /**
-     * GREEN END has been confirmed.
-     *
-     * The final completed RED window is the END GUARD,
-     * not a data bit.
-     */
     /**
      * GREEN END has been confirmed.
      *
@@ -430,7 +548,8 @@ class OpticalDecoder(
             return
         }
 
-        val completedWindowCount = completedBitWindows.size
+        val completedWindowCount =
+            completedBitWindows.size
 
         /*
          * Depending on when GREEN END is detected:
@@ -441,25 +560,29 @@ class OpticalDecoder(
          * remainder 1:
          *   the RED-OFF end guard has already completed
          */
-        val dataBitCount = when {
-            completedWindowCount % 8 == 0 -> {
-                completedWindowCount
-            }
+        val dataBitCount =
+            when {
 
-            completedWindowCount % 8 == 1 -> {
-                completedWindowCount - 1
-            }
+                completedWindowCount % 8 == 0 -> {
+                    completedWindowCount
+                }
 
-            else -> {
-                Log.d(
-                    "CipherBeamDecoder",
-                    "COMPLETE FAILED: invalid window count " +
-                            "$completedWindowCount (remainder=${completedWindowCount % 8})"
-                )
-                reset()
-                return
+                completedWindowCount % 8 == 1 -> {
+                    completedWindowCount - 1
+                }
+
+                else -> {
+                    Log.d(
+                        "CipherBeamDecoder",
+                        "COMPLETE FAILED: invalid window count " +
+                                "$completedWindowCount " +
+                                "(remainder=${completedWindowCount % 8})"
+                    )
+
+                    reset()
+                    return
+                }
             }
-        }
 
         Log.d(
             "CipherBeamDecoder",
@@ -471,6 +594,7 @@ class OpticalDecoder(
                 "CipherBeamDecoder",
                 "COMPLETE FAILED: dataBitCount <= 0"
             )
+
             reset()
             return
         }
@@ -478,11 +602,12 @@ class OpticalDecoder(
         /*
          * Print the exact RED bit sequence that the phone decoded.
          */
-        val bitString = completedBitWindows
-            .take(dataBitCount)
-            .joinToString(separator = "") { bit ->
-                if (bit) "1" else "0"
-            }
+        val bitString =
+            completedBitWindows
+                .take(dataBitCount)
+                .joinToString(separator = "") { bit ->
+                    if (bit) "1" else "0"
+                }
 
         Log.d(
             "CipherBeamDecoder",
@@ -496,30 +621,37 @@ class OpticalDecoder(
 
         for (index in 0 until dataBitCount) {
 
-            val bit = completedBitWindows[index]
+            val bit =
+                completedBitWindows[index]
 
             if (!consumeDataBit(bit)) {
+
                 Log.d(
                     "CipherBeamDecoder",
-                    "COMPLETE FAILED: invalid printable ASCII at bit index=$index " +
+                    "COMPLETE FAILED: invalid printable ASCII " +
+                            "at bit index=$index " +
                             "messageSoFar='$message'"
                 )
+
                 reset()
                 return
             }
         }
 
         if (currentByteBitCount != 0) {
+
             Log.d(
                 "CipherBeamDecoder",
                 "COMPLETE FAILED: incomplete final byte, " +
                         "currentByteBitCount=$currentByteBitCount"
             )
+
             reset()
             return
         }
 
-        val completed = message.toString()
+        val completed =
+            message.toString()
 
         Log.d(
             "CipherBeamDecoder",
@@ -536,10 +668,16 @@ class OpticalDecoder(
         redOnSamples = 0
         redTotalSamples = 0
     }
-    private fun consumeDataBit(bit: Boolean): Boolean {
+
+    private fun consumeDataBit(
+        bit: Boolean
+    ): Boolean {
 
         currentByte =
-            ((currentByte shl 1) or if (bit) 1 else 0) and 0xFF
+            (
+                    (currentByte shl 1) or
+                            if (bit) 1 else 0
+                    ) and 0xFF
 
         currentByteBitCount++
 
@@ -547,7 +685,8 @@ class OpticalDecoder(
             return true
         }
 
-        val byteValue = currentByte
+        val byteValue =
+            currentByte
 
         currentByte = 0
         currentByteBitCount = 0
@@ -566,7 +705,9 @@ class OpticalDecoder(
             return false
         }
 
-        message.append(byteValue.toChar())
+        message.append(
+            byteValue.toChar()
+        )
 
         return true
     }
@@ -581,7 +722,9 @@ class OpticalDecoder(
     @Deprecated(
         message = "Use feedOpticalSample(timestampNs, redOn, greenOn)"
     )
-    fun feedBit(bit: Boolean): Snapshot {
+    fun feedBit(
+        bit: Boolean
+    ): Snapshot {
         /*
          * Do not decode RED-only bits anymore.
          */
