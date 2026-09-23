@@ -1,86 +1,52 @@
 /*
  * CipherBeam AI — ESP32-S3 LED Control Firmware
  * ==========================================================================
- * Original Roadmap Phase 5: digital ON/OFF GPIO control.
- * Original Roadmap Phase 6: deterministic OPTICAL_TEST pulse sequence.
- * Original Roadmap Phase 7: basic optical ASCII message transmission.
+ * Phase 5: LED GPIO control
+ * Phase 6: Optical test
+ * Phase 7: Basic optical transport
+ * Phase 9/10: CipherBeam packet transmission
  *
  * Hardware:
- *   GPIO4 -> 220R -> Red LED   -> GND   (optical data carrier)
- *   GPIO5 -> 220R -> Green LED -> GND   (control/sync indicator)
+ *   GPIO4 -> 220R -> Red LED   -> GND
+ *   GPIO5 -> 220R -> Green LED -> GND
  *
- * Serial:
- *   115200 baud
- *   Commands are '\n'-terminated ASCII strings.
+ * Optical protocol:
  *
- * Existing commands:
+ *   GREEN START       600 ms
+ *   GREEN OFF GUARD   200 ms
+ *   RED DATA          200 ms / bit, MSB first
+ *   RED OFF GUARD     200 ms
+ *   GREEN END         600 ms
  *
- *   PING\n
- *       -> PONG\n
+ * Logical packet:
  *
- *   STATUS\n
- *       -> ESP32_READY\n
+ *   SYNC       1 byte
+ *   VERSION    1 byte
+ *   FLAGS      1 byte
+ *   LENGTH     1 byte
+ *   PAYLOAD    0..100 bytes
+ *   CRC        2 bytes
  *
- *   LED_RED_ON\n
- *       -> OK\n
+ * Current CRC value:
  *
- *   LED_RED_OFF\n
- *       -> OK\n
+ *   0x0000
  *
- *   LED_GREEN_ON\n
- *       -> OK\n
- *
- *   LED_GREEN_OFF\n
- *       -> OK\n
- *
- *   OPTICAL_TEST\n
- *       -> OPTICAL_TEST_DONE\n
- *
- * Phase 7 command:
- *
- *   TRANSMIT:<message>\n
- *       -> Red LED transmits the message optically
- *       -> TRANSMIT_DONE\n
- *
- * --------------------------------------------------------------------------
- * PHASE 7 TEMPORARY OPTICAL ENCODING
- * --------------------------------------------------------------------------
- *
- * Each bit lasts 200 ms.
- *
- *   Bit 1 = Red LED ON
- *   Bit 0 = Red LED OFF
- *
- * Transmission:
- *
- *   START marker = 0xFE = 11111110
- *   PAYLOAD      = 8-bit ASCII for each message character
- *   END marker   = 0xFF = 11111111
+ * Actual CRC implementation belongs to the later CRC phase.
  *
  * Example:
  *
- *   HELLO
+ *   TRANSMIT:HELLO
  *
- *   11111110
- *   01001000   H
- *   01000101   E
- *   01001100   L
- *   01001100   L
- *   01001111   O
- *   11111111
+ * Produces:
  *
- * The LED is always left OFF after transmission.
+ *   A5 01 00 05 48 45 4C 4C 4F 00 00
  *
- * This is intentionally NOT the final CipherBeam protocol.
- * Manchester encoding, packet framing, payload length, CRC,
- * encryption, retransmission, AI decoding, etc. belong to later phases.
+ * Red LED transmits those bytes MSB first.
  *
- * During OPTICAL_TEST or TRANSMIT, serial commands are not processed.
- * They remain in the serial input buffer and are handled after the
- * optical operation finishes.
+ * GREEN is used only for framing.
+ * RED is used only for packet data.
  *
- * Messages are expected to be printable ASCII. The backend validates
- * this before sending TRANSMIT:<message> to the ESP32.
+ * RED and GREEN are never ON simultaneously.
  */
 
 // ==========================================================================
@@ -89,6 +55,35 @@
 
 const int RED_PIN = 4;
 const int GREEN_PIN = 5;
+
+
+// ==========================================================================
+// Optical timing
+// ==========================================================================
+
+const unsigned long GREEN_START_DURATION_MS = 600;
+const unsigned long GREEN_END_DURATION_MS = 600;
+const unsigned long OPTICAL_GUARD_DURATION_MS = 200;
+const unsigned long OPTICAL_BIT_DURATION_MS = 150;
+
+
+// ==========================================================================
+// Packet specification
+// ==========================================================================
+
+const byte CIPHERBEAM_SYNC = 0xA5;
+const byte CIPHERBEAM_VERSION = 0x01;
+const byte CIPHERBEAM_FLAGS = 0x00;
+
+const int CIPHERBEAM_MAX_PAYLOAD_LENGTH = 100;
+
+const int CIPHERBEAM_HEADER_SIZE = 4;
+const int CIPHERBEAM_CRC_SIZE = 2;
+
+const int CIPHERBEAM_MAX_PACKET_SIZE =
+  CIPHERBEAM_HEADER_SIZE +
+  CIPHERBEAM_MAX_PAYLOAD_LENGTH +
+  CIPHERBEAM_CRC_SIZE;
 
 
 // ==========================================================================
@@ -106,38 +101,46 @@ unsigned long opticalTestPhaseStartMs = 0;
 
 
 // ==========================================================================
-// Phase 7 — Basic Optical Transmission
+// Packet transmission state
 // ==========================================================================
 
-const unsigned long OPTICAL_BIT_DURATION_MS = 200;
+enum OpticalTxState {
+  TX_IDLE,
+  TX_GREEN_START,
+  TX_START_GUARD,
+  TX_DATA,
+  TX_END_GUARD,
+  TX_GREEN_END
+};
 
-// Start and end markers.
-const byte OPTICAL_START_MARKER = 0xFE;
-const byte OPTICAL_END_MARKER = 0xFF;
-
-// Maximum message length supported by this firmware.
-// The backend currently enforces the same practical limit.
-const int OPTICAL_MAX_MESSAGE_LENGTH = 100;
+OpticalTxState opticalTxState = TX_IDLE;
 
 String opticalTxMessage = "";
 
-bool opticalTxActive = false;
+byte opticalTxPacket[CIPHERBEAM_MAX_PACKET_SIZE];
+
+int opticalTxPacketLength = 0;
 
 int opticalTxByteIndex = 0;
 int opticalTxBitIndex = 0;
 
-unsigned long opticalTxBitStartMs = 0;
+unsigned long opticalTxStateStartMs = 0;
 
 
 // ==========================================================================
-// Phase 6 — OPTICAL_TEST functions
+// Phase 6 — OPTICAL_TEST
 // ==========================================================================
 
 void startOpticalTest() {
+
   opticalTestActive = true;
-  opticalTestPulsesRemaining = OPTICAL_TEST_PULSE_COUNT;
+
+  opticalTestPulsesRemaining =
+    OPTICAL_TEST_PULSE_COUNT;
+
   opticalTestLedOn = true;
 
+  digitalWrite(GREEN_PIN, LOW);
   digitalWrite(RED_PIN, HIGH);
 
   opticalTestPhaseStartMs = millis();
@@ -145,11 +148,14 @@ void startOpticalTest() {
 
 
 void updateOpticalTest() {
+
   if (!opticalTestActive) {
     return;
   }
 
-  unsigned long elapsed = millis() - opticalTestPhaseStartMs;
+  unsigned long elapsed =
+    millis() - opticalTestPhaseStartMs;
+
 
   if (opticalTestLedOn) {
 
@@ -171,8 +177,8 @@ void updateOpticalTest() {
 
         opticalTestActive = false;
 
-        // Always leave the optical LED OFF.
         digitalWrite(RED_PIN, LOW);
+        digitalWrite(GREEN_PIN, LOW);
 
         Serial.println("OPTICAL_TEST_DONE");
 
@@ -189,125 +195,431 @@ void updateOpticalTest() {
 
 
 // ==========================================================================
-// Phase 7 — Optical transmission helpers
+// Packet construction
 // ==========================================================================
 
-int getOpticalTransmissionByte() {
+bool buildCipherBeamPacket(String message) {
 
-  // Byte 0 = START marker.
-  if (opticalTxByteIndex == 0) {
-    return OPTICAL_START_MARKER;
+  int payloadLength =
+    message.length();
+
+
+  if (
+    payloadLength <= 0 ||
+    payloadLength > CIPHERBEAM_MAX_PAYLOAD_LENGTH
+  ) {
+
+    return false;
   }
 
-  // Bytes 1..message.length() = message characters.
-  if (opticalTxByteIndex <= opticalTxMessage.length()) {
-    return (byte)opticalTxMessage.charAt(opticalTxByteIndex - 1);
+
+  /*
+   * Validate printable ASCII.
+   *
+   * The current Phase 10 plaintext packet uses
+   * printable ASCII payloads.
+   */
+  for (int i = 0; i < payloadLength; i++) {
+
+    byte value =
+      (byte)message.charAt(i);
+
+    if (value < 0x20 || value > 0x7E) {
+
+      return false;
+    }
   }
 
-  // Final byte = END marker.
-  return OPTICAL_END_MARKER;
+
+  int index = 0;
+
+
+  // ------------------------------------------------------------------------
+  // SYNC
+  // ------------------------------------------------------------------------
+
+  opticalTxPacket[index++] =
+    CIPHERBEAM_SYNC;
+
+
+  // ------------------------------------------------------------------------
+  // VERSION
+  // ------------------------------------------------------------------------
+
+  opticalTxPacket[index++] =
+    CIPHERBEAM_VERSION;
+
+
+  // ------------------------------------------------------------------------
+  // FLAGS
+  // ------------------------------------------------------------------------
+
+  opticalTxPacket[index++] =
+    CIPHERBEAM_FLAGS;
+
+
+  // ------------------------------------------------------------------------
+  // LENGTH
+  // ------------------------------------------------------------------------
+
+  opticalTxPacket[index++] =
+    (byte)payloadLength;
+
+
+  // ------------------------------------------------------------------------
+  // PAYLOAD
+  // ------------------------------------------------------------------------
+
+  for (int i = 0; i < payloadLength; i++) {
+
+    opticalTxPacket[index++] =
+      (byte)message.charAt(i);
+  }
+
+
+  // ------------------------------------------------------------------------
+  // CRC
+  //
+  // Phase 13 will replace this placeholder with the
+  // actual CRC calculation.
+  //
+  // Big-endian:
+  //
+  //   CRC high byte
+  //   CRC low byte
+  // ------------------------------------------------------------------------
+
+  opticalTxPacket[index++] = 0x00;
+  opticalTxPacket[index++] = 0x00;
+
+
+  opticalTxPacketLength =
+    index;
+
+
+  return true;
+}
+
+
+// ==========================================================================
+// Optical transmission helpers
+// ==========================================================================
+
+void startGreenStart() {
+
+  digitalWrite(RED_PIN, LOW);
+
+  digitalWrite(GREEN_PIN, HIGH);
+
+  opticalTxState =
+    TX_GREEN_START;
+
+  opticalTxStateStartMs =
+    millis();
+}
+
+
+void startStartGuard() {
+
+  digitalWrite(RED_PIN, LOW);
+
+  digitalWrite(GREEN_PIN, LOW);
+
+  opticalTxState =
+    TX_START_GUARD;
+
+  opticalTxStateStartMs =
+    millis();
 }
 
 
 void outputCurrentOpticalBit() {
 
-  int currentByte = getOpticalTransmissionByte();
+  if (
+    opticalTxByteIndex < 0 ||
+    opticalTxByteIndex >= opticalTxPacketLength
+  ) {
 
-  // MSB first:
-  //
-  // bit index 0 -> bit 7
-  // bit index 1 -> bit 6
-  // ...
-  // bit index 7 -> bit 0
-  //
-  // 1 = LED ON
-  // 0 = LED OFF
+    digitalWrite(RED_PIN, LOW);
 
-  byte mask = 0x80 >> opticalTxBitIndex;
+    return;
+  }
 
-  bool bitValue = (currentByte & mask) != 0;
+
+  byte currentByte =
+    opticalTxPacket[opticalTxByteIndex];
+
+
+  /*
+   * MSB first:
+   *
+   * bit index 0 -> bit 7
+   * bit index 1 -> bit 6
+   * ...
+   * bit index 7 -> bit 0
+   */
+
+  byte mask =
+    0x80 >> opticalTxBitIndex;
+
+
+  bool bitValue =
+    (currentByte & mask) != 0;
+
+
+  digitalWrite(
+    GREEN_PIN,
+    LOW
+  );
 
   digitalWrite(
     RED_PIN,
     bitValue ? HIGH : LOW
   );
 
-  opticalTxBitStartMs = millis();
+
+  opticalTxStateStartMs =
+    millis();
 }
 
 
-void startOpticalTransmission(String message) {
-
-  opticalTxMessage = message;
-
-  opticalTxActive = true;
+void startDataTransmission() {
 
   opticalTxByteIndex = 0;
   opticalTxBitIndex = 0;
 
-  // Start from a known OFF state before the first bit.
-  digitalWrite(RED_PIN, LOW);
+  opticalTxState =
+    TX_DATA;
 
-  // Immediately output the first bit of the START marker.
   outputCurrentOpticalBit();
+}
+
+
+void startEndGuard() {
+
+  digitalWrite(RED_PIN, LOW);
+  digitalWrite(GREEN_PIN, LOW);
+
+  opticalTxState =
+    TX_END_GUARD;
+
+  opticalTxStateStartMs =
+    millis();
+}
+
+
+void startGreenEnd() {
+
+  digitalWrite(RED_PIN, LOW);
+  digitalWrite(GREEN_PIN, HIGH);
+
+  opticalTxState =
+    TX_GREEN_END;
+
+  opticalTxStateStartMs =
+    millis();
 }
 
 
 void finishOpticalTransmission() {
 
-  opticalTxActive = false;
+  opticalTxState =
+    TX_IDLE;
 
   opticalTxMessage = "";
+
+  opticalTxPacketLength = 0;
 
   opticalTxByteIndex = 0;
   opticalTxBitIndex = 0;
 
-  // Critical: always leave the red LED OFF.
+
   digitalWrite(RED_PIN, LOW);
+  digitalWrite(GREEN_PIN, LOW);
+
 
   Serial.println("TRANSMIT_DONE");
 }
 
 
+// ==========================================================================
+// Optical transmission state machine
+// ==========================================================================
+
 void updateOpticalTransmission() {
 
-  if (!opticalTxActive) {
+  if (opticalTxState == TX_IDLE) {
     return;
   }
 
-  unsigned long elapsed = millis() - opticalTxBitStartMs;
 
-  if (elapsed < OPTICAL_BIT_DURATION_MS) {
-    return;
-  }
+  unsigned long elapsed =
+    millis() - opticalTxStateStartMs;
 
-  // Move to the next bit.
-  opticalTxBitIndex++;
 
-  // Finished the current byte.
-  if (opticalTxBitIndex >= 8) {
+  // ------------------------------------------------------------------------
+  // GREEN START
+  // ------------------------------------------------------------------------
 
-    opticalTxBitIndex = 0;
-    opticalTxByteIndex++;
-  }
+  if (
+    opticalTxState == TX_GREEN_START
+  ) {
 
-  // Total bytes:
-  //
-  // 1 START marker
-  // + message length
-  // + 1 END marker
-  //
-  int totalBytes = opticalTxMessage.length() + 2;
+    if (
+      elapsed >=
+      GREEN_START_DURATION_MS
+    ) {
 
-  if (opticalTxByteIndex >= totalBytes) {
-
-    finishOpticalTransmission();
+      startStartGuard();
+    }
 
     return;
   }
 
-  // Output the next bit.
-  outputCurrentOpticalBit();
+
+  // ------------------------------------------------------------------------
+  // START GUARD
+  // ------------------------------------------------------------------------
+
+  if (
+    opticalTxState == TX_START_GUARD
+  ) {
+
+    if (
+      elapsed >=
+      OPTICAL_GUARD_DURATION_MS
+    ) {
+
+      startDataTransmission();
+    }
+
+    return;
+  }
+
+
+  // ------------------------------------------------------------------------
+  // RED DATA
+  // ------------------------------------------------------------------------
+
+  if (
+    opticalTxState == TX_DATA
+  ) {
+
+    if (
+      elapsed <
+      OPTICAL_BIT_DURATION_MS
+    ) {
+
+      return;
+    }
+
+
+    opticalTxBitIndex++;
+
+
+    // Finished current byte.
+    if (
+      opticalTxBitIndex >= 8
+    ) {
+
+      opticalTxBitIndex = 0;
+      opticalTxByteIndex++;
+    }
+
+
+    // Finished entire packet.
+    if (
+      opticalTxByteIndex >=
+      opticalTxPacketLength
+    ) {
+
+      startEndGuard();
+
+      return;
+    }
+
+
+    outputCurrentOpticalBit();
+
+    return;
+  }
+
+
+  // ------------------------------------------------------------------------
+  // END GUARD
+  // ------------------------------------------------------------------------
+
+  if (
+    opticalTxState == TX_END_GUARD
+  ) {
+
+    if (
+      elapsed >=
+      OPTICAL_GUARD_DURATION_MS
+    ) {
+
+      startGreenEnd();
+    }
+
+    return;
+  }
+
+
+  // ------------------------------------------------------------------------
+  // GREEN END
+  // ------------------------------------------------------------------------
+
+  if (
+    opticalTxState == TX_GREEN_END
+  ) {
+
+    if (
+      elapsed >=
+      GREEN_END_DURATION_MS
+    ) {
+
+      finishOpticalTransmission();
+    }
+
+    return;
+  }
+}
+
+
+// ==========================================================================
+// Start packet transmission
+// ==========================================================================
+
+bool startOpticalTransmission(String message) {
+
+  if (
+    !buildCipherBeamPacket(message)
+  ) {
+
+    return false;
+  }
+
+
+  opticalTxMessage =
+    message;
+
+
+  /*
+   * Start from a completely known state.
+   */
+
+  digitalWrite(RED_PIN, LOW);
+  digitalWrite(GREEN_PIN, LOW);
+
+
+  opticalTxByteIndex = 0;
+  opticalTxBitIndex = 0;
+
+
+  startGreenStart();
+
+
+  return true;
 }
 
 
@@ -322,11 +634,15 @@ void setup() {
   pinMode(RED_PIN, OUTPUT);
   pinMode(GREEN_PIN, OUTPUT);
 
+
   // Known initial state.
+
   digitalWrite(RED_PIN, LOW);
   digitalWrite(GREEN_PIN, LOW);
 
+
   delay(1000);
+
 
   Serial.println("ESP32_READY");
 }
@@ -346,7 +662,7 @@ void loop() {
 
 
   // ------------------------------------------------------------------------
-  // Phase 7 optical transmission
+  // Packet optical transmission
   // ------------------------------------------------------------------------
 
   updateOpticalTransmission();
@@ -355,52 +671,62 @@ void loop() {
   // ------------------------------------------------------------------------
   // Serial command processing
   //
-  // Do not process new commands while either optical operation is active.
+  // Do not process new commands while an optical operation
+  // is active.
   // ------------------------------------------------------------------------
 
   if (
     !opticalTestActive &&
-    !opticalTxActive &&
+    opticalTxState == TX_IDLE &&
     Serial.available()
   ) {
 
-    String command = Serial.readStringUntil('\n');
+    String command =
+      Serial.readStringUntil('\n');
 
     command.trim();
 
 
     // ----------------------------------------------------------------------
-    // Phase 2D — PING
+    // PING
     // ----------------------------------------------------------------------
 
-    if (command == "PING") {
+    if (
+      command == "PING"
+    ) {
 
       Serial.println("PONG");
     }
 
 
     // ----------------------------------------------------------------------
-    // Phase 2D — STATUS
+    // STATUS
     // ----------------------------------------------------------------------
 
-    else if (command == "STATUS") {
+    else if (
+      command == "STATUS"
+    ) {
 
       Serial.println("ESP32_READY");
     }
 
 
     // ----------------------------------------------------------------------
-    // Phase 5 — RED LED
+    // RED LED
     // ----------------------------------------------------------------------
 
-    else if (command == "LED_RED_ON") {
+    else if (
+      command == "LED_RED_ON"
+    ) {
 
       digitalWrite(RED_PIN, HIGH);
 
       Serial.println("OK");
     }
 
-    else if (command == "LED_RED_OFF") {
+    else if (
+      command == "LED_RED_OFF"
+    ) {
 
       digitalWrite(RED_PIN, LOW);
 
@@ -409,17 +735,21 @@ void loop() {
 
 
     // ----------------------------------------------------------------------
-    // Phase 5 — GREEN LED
+    // GREEN LED
     // ----------------------------------------------------------------------
 
-    else if (command == "LED_GREEN_ON") {
+    else if (
+      command == "LED_GREEN_ON"
+    ) {
 
       digitalWrite(GREEN_PIN, HIGH);
 
       Serial.println("OK");
     }
 
-    else if (command == "LED_GREEN_OFF") {
+    else if (
+      command == "LED_GREEN_OFF"
+    ) {
 
       digitalWrite(GREEN_PIN, LOW);
 
@@ -428,40 +758,43 @@ void loop() {
 
 
     // ----------------------------------------------------------------------
-    // Phase 6 — OPTICAL_TEST
+    // OPTICAL_TEST
     // ----------------------------------------------------------------------
 
-    else if (command == "OPTICAL_TEST") {
+    else if (
+      command == "OPTICAL_TEST"
+    ) {
 
       startOpticalTest();
-
-      // No immediate response.
-      // OPTICAL_TEST_DONE is sent when the test finishes.
     }
 
 
     // ----------------------------------------------------------------------
-    // Phase 7 — TRANSMIT:<message>
+    // TRANSMIT:<message>
     // ----------------------------------------------------------------------
 
-    else if (command.startsWith("TRANSMIT:")) {
+    else if (
+      command.startsWith("TRANSMIT:")
+    ) {
 
-      String message = command.substring(9);
+      String message =
+        command.substring(9);
 
-      // Basic firmware-side safety checks.
-      //
-      // The backend performs the main validation, but the firmware
-      // also protects itself in case somebody sends a command manually.
 
       if (
-        message.length() > 0 &&
-        message.length() <= OPTICAL_MAX_MESSAGE_LENGTH
+        startOpticalTransmission(message)
       ) {
 
-        startOpticalTransmission(message);
+        /*
+         * No immediate response.
+         *
+         * TRANSMIT_DONE is sent after
+         * the complete optical frame.
+         */
 
-        // No immediate response.
-        // TRANSMIT_DONE is sent after the complete transmission.
+      } else {
+
+        Serial.println("TRANSMIT_ERROR");
       }
     }
 

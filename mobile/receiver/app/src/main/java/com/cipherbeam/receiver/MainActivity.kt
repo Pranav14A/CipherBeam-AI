@@ -20,6 +20,7 @@ import androidx.core.content.ContextCompat
 import com.cipherbeam.receiver.camera.CameraPreview
 import com.cipherbeam.receiver.camera.RedLedAnalyzer
 import com.cipherbeam.receiver.optical.OpticalDecoder
+import com.cipherbeam.receiver.packet.CipherBeamPacket
 
 class MainActivity : ComponentActivity() {
 
@@ -120,6 +121,17 @@ private fun ReceiverScreen() {
         mutableStateOf<String?>(null)
     }
 
+    /*
+     * Packet-level state.
+     *
+     * This is populated only after the optical decoder has produced
+     * a complete byte sequence and CipherBeamPacketParser has
+     * successfully validated the packet structure.
+     */
+    var receivedPacket by remember {
+        mutableStateOf<CipherBeamPacket?>(null)
+    }
+
     var debug by remember {
         mutableStateOf<RedLedAnalyzer.DebugSample?>(null)
     }
@@ -172,12 +184,33 @@ private fun ReceiverScreen() {
                 decoderState = snapshot
 
                 /*
-                 * Capture a completed message before the decoder
-                 * moves back to WAITING_FOR_START.
+                 * Capture a completed printable message before
+                 * the decoder returns to WAITING_FOR_START.
                  */
                 snapshot.completedMessage?.let { completed ->
                     lastReceivedMessage = completed
                 }
+            },
+
+            onPacket = { packet ->
+                /*
+                 * Packet parser has already validated the
+                 * logical packet structure.
+                 *
+                 * Phase 10 currently has no CRC validation yet,
+                 * so the CRC field is displayed as parsed.
+                 */
+                receivedPacket = packet
+
+                /*
+                 * For the current plaintext Phase 10 packet,
+                 * the payload is expected to contain printable ASCII.
+                 */
+                val payloadText =
+                    packet.payload
+                        .toString(Charsets.US_ASCII)
+
+                lastReceivedMessage = payloadText
             }
         )
 
@@ -267,7 +300,7 @@ private fun ReceiverScreen() {
         }
 
         /*
-         * Received message panel.
+         * Received message / packet panel.
          */
         Column(
             modifier = Modifier
@@ -295,6 +328,36 @@ private fun ReceiverScreen() {
                 color = Color.White,
                 style = MaterialTheme.typography.headlineSmall
             )
+
+            receivedPacket?.let { packet ->
+
+                Spacer(Modifier.height(10.dp))
+
+                Text(
+                    text =
+                        "Packet v${packet.version}  " +
+                                "Flags: 0x${packet.flags.toString(16).padStart(2, '0')}",
+                    color = Color.White
+                )
+
+                Text(
+                    text =
+                        "Profile: ${packet.securityProfile}  " +
+                                "Algorithm: ${packet.algorithmId}",
+                    color = Color.White
+                )
+
+                Text(
+                    text =
+                        "Payload: ${packet.length} bytes  " +
+                                "CRC: 0x${
+                                    (packet.crc ?: 0)
+                                        .toString(16)
+                                        .padStart(4, '0')
+                                }",
+                    color = Color.White
+                )
+            }
 
             if (
                 decoderState.state ==

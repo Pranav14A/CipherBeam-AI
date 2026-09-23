@@ -2,6 +2,7 @@ package com.cipherbeam.receiver.camera
 
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import android.util.Size
 import android.view.View
 import androidx.camera.core.CameraSelector
@@ -17,6 +18,8 @@ import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import com.cipherbeam.receiver.optical.OpticalDecoder
+import com.cipherbeam.receiver.packet.CipherBeamPacket
+import com.cipherbeam.receiver.packet.CipherBeamPacketParser
 import java.util.concurrent.Executors
 
 @Composable
@@ -24,7 +27,8 @@ fun CameraPreview(
     modifier: Modifier = Modifier,
     onBit: (Boolean) -> Unit,
     onDebug: (RedLedAnalyzer.DebugSample) -> Unit,
-    onDecoderSnapshot: (OpticalDecoder.Snapshot) -> Unit
+    onDecoderSnapshot: (OpticalDecoder.Snapshot) -> Unit,
+    onPacket: (CipherBeamPacket) -> Unit = {}
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -73,6 +77,65 @@ fun CameraPreview(
                             redOn = redOn,
                             greenOn = greenOn
                         )
+
+                    /*
+                     * Packet-layer boundary.
+                     *
+                     * OpticalDecoder produces raw bytes.
+                     * CipherBeamPacketParser interprets those bytes
+                     * as a CipherBeam logical packet.
+                     */
+                    snapshot.completedBytes?.let { completedBytes ->
+
+                        when (
+                            val result =
+                                CipherBeamPacketParser.parse(
+                                    completedBytes
+                                )
+                        ) {
+
+                            is CipherBeamPacketParser.Result.Success -> {
+
+                                Log.d(
+                                    "CipherBeamPacket",
+                                    "PACKET SUCCESS: " +
+                                            "startIndex=${result.startIndex}, " +
+                                            "bytesConsumed=${result.bytesConsumed}, " +
+                                            "version=${result.packet.version}, " +
+                                            "flags=0x${
+                                                result.packet.flags
+                                                    .toString(16)
+                                                    .padStart(2, '0')
+                                            }, " +
+                                            "length=${result.packet.length}, " +
+                                            "crc=0x${
+                                                result.packet.crc
+                                                    ?.toString(16)
+                                                    ?.padStart(4, '0')
+                                            }"
+                                )
+
+                                /*
+                                 * Deliver the validated packet to
+                                 * the application/UI layer.
+                                 *
+                                 * The callback is posted to the main
+                                 * thread because it may update Compose state.
+                                 */
+                                mainHandler.post {
+                                    onPacket(result.packet)
+                                }
+                            }
+
+                            is CipherBeamPacketParser.Result.Failure -> {
+
+                                Log.d(
+                                    "CipherBeamPacket",
+                                    "PACKET FAILURE: ${result.reason}"
+                                )
+                            }
+                        }
+                    }
 
                     mainHandler.post {
                         onDecoderSnapshot(snapshot)
