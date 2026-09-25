@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "CipherBeam AI desktop backend (Party A)"
 requires-python = ">=3.12"
 dependencies = [
+    "cryptography>=50.0.1,<51",
     "fastapi>=0.141.1",
     "pydantic>=2.13.4",
     "pyserial>=3.5",

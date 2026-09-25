@@ -12,15 +12,23 @@ package com.cipherbeam.receiver.packet
  *   PAYLOAD 0–100 bytes
  *   CRC     2 bytes
  *
- * Phase 10 currently defines the packet structure.
+ * CRC:
+ *   CRC-16/CCITT-FALSE
+ *   Polynomial: 0x1021
+ *   Initial value: 0xFFFF
+ *   Input/output reflection: disabled
+ *   XOR output: 0x0000
  *
- * The CRC algorithm is intentionally not implemented yet because
- * it is frozen in Phase 13. Until then, a packet without a CRC
- * uses 0x0000 as the two-byte CRC placeholder.
+ * CRC is calculated over:
+ *
+ *   VERSION + FLAGS + LENGTH + PAYLOAD
+ *
+ * SYNC is excluded from CRC.
  */
 object CipherBeamPacketSerializer {
 
     fun serialize(packet: CipherBeamPacket): ByteArray {
+
         val result =
             ByteArray(
                 CipherBeamPacket.HEADER_SIZE +
@@ -67,14 +75,25 @@ object CipherBeamPacketSerializer {
         /*
          * CRC
          *
-         * Phase 13 will define the actual CRC algorithm.
+         * If a CRC was explicitly supplied in the packet,
+         * preserve it.
          *
-         * Until then, an absent CRC is represented by
-         * the placeholder value 0x0000.
+         * Otherwise calculate CRC-16/CCITT-FALSE automatically.
          */
         val crc =
-            packet.crc ?: 0x0000
+            packet.crc
+                ?: CipherBeamPacket.calculateCrc(
+                    version = packet.version,
+                    flags = packet.flags,
+                    payload = packet.payload
+                )
 
+        /*
+         * CRC is transmitted big-endian:
+         *
+         * CRC high byte
+         * CRC low byte
+         */
         result[index++] =
             ((crc ushr 8) and 0xFF).toByte()
 

@@ -163,6 +163,12 @@ class RedLedAnalyzer(
                  * GREEN position is detected, the RED search must follow it rather
                  * than remaining at an old RED location.
                  */
+                redTracker.reset()
+
+                /*
+                 * Re-anchor RED search to the newly detected GREEN position.
+                 */
+
                 redCenterX = greenOnset.centerX
                 redCenterY = greenOnset.centerY
             }

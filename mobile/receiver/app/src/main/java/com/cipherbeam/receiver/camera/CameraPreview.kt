@@ -49,6 +49,7 @@ fun CameraPreview(
             val previewView = PreviewView(ctx)
 
             val decoder = OpticalDecoder()
+            var packetHandledForCurrentCompletion = false
 
             val analyzer = RedLedAnalyzer(
                 onBit = { bit ->
@@ -85,56 +86,36 @@ fun CameraPreview(
                      * CipherBeamPacketParser interprets those bytes
                      * as a CipherBeam logical packet.
                      */
-                    snapshot.completedBytes?.let { completedBytes ->
+                    val completedBytes = snapshot.completedBytes
 
-                        when (
-                            val result =
-                                CipherBeamPacketParser.parse(
-                                    completedBytes
-                                )
-                        ) {
+                    if (completedBytes != null) {
+                        if (!packetHandledForCurrentCompletion) {
+                            packetHandledForCurrentCompletion = true
 
-                            is CipherBeamPacketParser.Result.Success -> {
+                            when (val result = CipherBeamPacketParser.parse(completedBytes)) {
+                                is CipherBeamPacketParser.Result.Success -> {
+                                    Log.d(
+                                        "CipherBeamPacket",
+                                        "PACKET SUCCESS: startIndex=${result.startIndex}, " +
+                                                "bytesConsumed=${result.bytesConsumed}, " +
+                                                "version=${result.packet.version}, " +
+                                                "flags=0x${result.packet.flags.toString(16).padStart(2, '0')}, " +
+                                                "length=${result.packet.length}, " +
+                                                "crc=0x${(result.packet.crc ?: 0).toString(16).padStart(4, '0')}"
+                                    )
+                                    mainHandler.post { onPacket(result.packet) }
+                                }
 
-                                Log.d(
-                                    "CipherBeamPacket",
-                                    "PACKET SUCCESS: " +
-                                            "startIndex=${result.startIndex}, " +
-                                            "bytesConsumed=${result.bytesConsumed}, " +
-                                            "version=${result.packet.version}, " +
-                                            "flags=0x${
-                                                result.packet.flags
-                                                    .toString(16)
-                                                    .padStart(2, '0')
-                                            }, " +
-                                            "length=${result.packet.length}, " +
-                                            "crc=0x${
-                                                result.packet.crc
-                                                    ?.toString(16)
-                                                    ?.padStart(4, '0')
-                                            }"
-                                )
-
-                                /*
-                                 * Deliver the validated packet to
-                                 * the application/UI layer.
-                                 *
-                                 * The callback is posted to the main
-                                 * thread because it may update Compose state.
-                                 */
-                                mainHandler.post {
-                                    onPacket(result.packet)
+                                is CipherBeamPacketParser.Result.Failure -> {
+                                    Log.d(
+                                        "CipherBeamPacket",
+                                        "PACKET FAILURE: ${result.reason}"
+                                    )
                                 }
                             }
-
-                            is CipherBeamPacketParser.Result.Failure -> {
-
-                                Log.d(
-                                    "CipherBeamPacket",
-                                    "PACKET FAILURE: ${result.reason}"
-                                )
-                            }
                         }
+                    } else {
+                        packetHandledForCurrentCompletion = false
                     }
 
                     mainHandler.post {
