@@ -3,7 +3,7 @@ package com.cipherbeam.receiver.packet
 /**
  * Parses a logical CipherBeam-AI packet from a byte stream.
  *
- * Phase 10 responsibilities:
+ * Responsibilities:
  * - find SYNC
  * - validate VERSION
  * - read FLAGS
@@ -11,10 +11,16 @@ package com.cipherbeam.receiver.packet
  * - validate payload length
  * - ensure the complete packet is present
  * - extract PAYLOAD
- * - extract the two CRC bytes
+ * - extract and verify CRC
  *
- * CRC verification is intentionally deferred until Phase 13,
- * because the CRC algorithm and byte order are not frozen yet.
+ * CRC:
+ *   CRC-16/CCITT-FALSE
+ *
+ * CRC is calculated over:
+ *
+ *   VERSION + FLAGS + LENGTH + PAYLOAD
+ *
+ * SYNC is excluded from CRC.
  */
 object CipherBeamPacketParser {
 
@@ -162,10 +168,12 @@ object CipherBeamPacketParser {
         index += payloadLength
 
         /*
-         * CRC is currently extracted but not verified.
+         * CRC
          *
-         * Phase 13 will define the actual CRC algorithm
-         * and byte-order validation.
+         * The CRC is transmitted big-endian:
+         *
+         * CRC high byte
+         * CRC low byte
          */
         val crcHigh =
             data[index].toInt() and 0xFF
@@ -177,15 +185,41 @@ object CipherBeamPacketParser {
 
         index++
 
-        val crc =
+        val receivedCrc =
             (crcHigh shl 8) or crcLow
+
+        /*
+         * Recalculate CRC from the received
+         * VERSION + FLAGS + LENGTH + PAYLOAD.
+         *
+         * SYNC is intentionally excluded.
+         */
+        val calculatedCrc =
+            CipherBeamPacket.calculateCrc(
+                version = version,
+                flags = flags,
+                payload = payload
+            )
+
+        /*
+         * Reject the packet if the received CRC
+         * does not match the calculated CRC.
+         */
+        if (receivedCrc != calculatedCrc) {
+            return Result.Failure(
+                "CRC mismatch: expected " +
+                        "%04X".format(calculatedCrc) +
+                        ", received " +
+                        "%04X".format(receivedCrc)
+            )
+        }
 
         val packet =
             CipherBeamPacket(
                 version = version,
                 flags = flags,
                 payload = payload,
-                crc = crc
+                crc = receivedCrc
             )
 
         return Result.Success(

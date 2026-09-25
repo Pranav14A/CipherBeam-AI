@@ -2,18 +2,20 @@
 
 Phase 2D: GET /hardware/status, POST /hardware/ping.
 Phase 5: POST /hardware/led — strictly digital ON/OFF GPIO control.
-Phase 7: POST /hardware/transmit — temporary basic optical message transmission.
+Current optical transmission: POST /hardware/transmit.
 
-Phase 7 uses:
-- 8-bit ASCII
-- 0xFE start marker
-- message bytes
-- 0xFF end marker
-- 200 ms per bit
+Current optical transmission:
+- CipherBeam packet format:
+  SYNC + VERSION + FLAGS + LENGTH + PAYLOAD + CRC
+- 150 ms per RED data bit
+- GREEN start: 600 ms
+- Start guard: 200 ms
+- End guard: 200 ms
+- GREEN end: 600 ms
 
-This is a temporary demonstration protocol. Final framing, CRC,
-encryption, retransmission, and other protocol features belong to
-later phases.
+The ESP32 performs packet construction and optical transmission.
+The backend waits for the actual TRANSMIT_DONE response before
+reporting transmission success.
 """
 
 from enum import Enum
@@ -137,12 +139,18 @@ async def hardware_led(
     return LedResponse(success=True)
 
 
-# --- Phase 7: Basic optical transmission ---
+# --- Optical packet transmission ---
 
 
-OPTICAL_BIT_DURATION_SECONDS = 0.2
-OPTICAL_MARKER_BYTES = 2
-OPTICAL_TIMEOUT_MARGIN_SECONDS = 2.0
+OPTICAL_BIT_DURATION_SECONDS = 0.150
+
+GREEN_START_DURATION_SECONDS = 0.600
+GREEN_END_DURATION_SECONDS = 0.600
+
+OPTICAL_GUARD_DURATION_SECONDS = 0.200
+
+OPTICAL_PACKET_OVERHEAD_BYTES = 6
+OPTICAL_TIMEOUT_MARGIN_SECONDS = 3.0
 
 
 class TransmitRequest(BaseModel):
@@ -165,8 +173,6 @@ class TransmitRequest(BaseModel):
                 "Message must contain ASCII characters only."
             ) from exc
 
-        # Keep the temporary Phase 7 protocol simple and camera-friendly.
-        # Printable ASCII is 0x20 through 0x7E.
         if any(ord(char) < 0x20 or ord(char) > 0x7E for char in value):
             raise ValueError(
                 "Message must contain printable ASCII characters only."
@@ -182,18 +188,52 @@ class TransmitResponse(BaseModel):
 
 
 def calculate_transmit_timeout(message: str) -> float:
-    """Calculate enough time for START + payload + END.
+    """Calculate enough time for the current CipherBeam packet transmission.
 
-    Every byte contains 8 bits and every bit lasts 200 ms.
-    Phase 7 adds a small safety margin for serial/firmware overhead.
+    Packet format:
+
+        SYNC       1 byte
+        VERSION    1 byte
+        FLAGS      1 byte
+        LENGTH     1 byte
+        PAYLOAD    N bytes
+        CRC        2 bytes
+
+    Therefore the total packet size is:
+
+        len(message) + 6 bytes
+
+    Optical framing:
+
+        GREEN START  600 ms
+        START GUARD  200 ms
+        RED DATA     150 ms per bit
+        END GUARD    200 ms
+        GREEN END    600 ms
+
+    A safety margin is added for firmware/serial scheduling overhead.
     """
 
-    total_bytes = len(message) + OPTICAL_MARKER_BYTES
-    transmission_seconds = (
-        total_bytes * 8 * OPTICAL_BIT_DURATION_SECONDS
+    packet_bytes = len(message) + OPTICAL_PACKET_OVERHEAD_BYTES
+
+    data_seconds = (
+        packet_bytes
+        * 8
+        * OPTICAL_BIT_DURATION_SECONDS
     )
 
-    return transmission_seconds + OPTICAL_TIMEOUT_MARGIN_SECONDS
+    framing_seconds = (
+        GREEN_START_DURATION_SECONDS
+        + OPTICAL_GUARD_DURATION_SECONDS
+        + OPTICAL_GUARD_DURATION_SECONDS
+        + GREEN_END_DURATION_SECONDS
+    )
+
+    return (
+        framing_seconds
+        + data_seconds
+        + OPTICAL_TIMEOUT_MARGIN_SECONDS
+    )
 
 
 @router.post("/transmit", response_model=TransmitResponse)
@@ -201,14 +241,14 @@ async def hardware_transmit(
     payload: TransmitRequest,
     manager: SerialManager = Depends(get_serial_manager),
 ) -> TransmitResponse:
-    """Transmit a message using the temporary Phase 7 optical protocol."""
+    """Transmit a message using the current CipherBeam optical packet."""
 
     command = f"TRANSMIT:{payload.message}"
     timeout = calculate_transmit_timeout(payload.message)
 
     try:
         await run_in_threadpool(
-            manager.request,
+            manager.request_until,
             command,
             "TRANSMIT_DONE",
             timeout,

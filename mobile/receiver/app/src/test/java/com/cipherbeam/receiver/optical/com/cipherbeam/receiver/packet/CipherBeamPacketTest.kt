@@ -34,8 +34,8 @@ class CipherBeamPacketTest {
                 0x4C.toByte(),
                 0x4C.toByte(),
                 0x4F.toByte(),
-                0x00.toByte(),
-                0x00.toByte()
+                0x6D.toByte(),
+                0x36.toByte()
             )
 
         assertArrayEquals(
@@ -75,7 +75,7 @@ class CipherBeamPacketTest {
         )
 
         assertEquals(
-            0x0000,
+            0x6D36,
             result.packet.crc
         )
 
@@ -87,6 +87,67 @@ class CipherBeamPacketTest {
         assertEquals(
             expected.size,
             result.bytesConsumed
+        )
+    }
+    @Test
+    fun crc16CcittFalse_helloPayload_returnsExpectedValue() {
+
+        val payload =
+            "HELLO".toByteArray(Charsets.US_ASCII)
+
+        val crc =
+            CipherBeamPacket.calculateCrc(
+                version = CipherBeamPacket.PROTOCOL_VERSION,
+                flags = 0x00,
+                payload = payload
+            )
+
+        assertEquals(
+            0x6D36,
+            crc
+        )
+    }
+
+    @Test
+    fun parserRejectsCorruptedCrc() {
+
+        val payload =
+            "HELLO".toByteArray(Charsets.US_ASCII)
+
+        val packet =
+            CipherBeamPacket(
+                version = CipherBeamPacket.PROTOCOL_VERSION,
+                flags = 0x00,
+                payload = payload
+            )
+
+        val serialized =
+            CipherBeamPacketSerializer.serialize(packet)
+
+        /*
+         * Corrupt the low CRC byte.
+         *
+         * Correct CRC:
+         *   6D 36
+         *
+         * Corrupted CRC:
+         *   6D 37
+         */
+        serialized[serialized.lastIndex] =
+            0x37.toByte()
+
+        val result =
+            CipherBeamPacketParser.parse(serialized)
+
+        assertTrue(
+            result is CipherBeamPacketParser.Result.Failure
+        )
+
+        result as CipherBeamPacketParser.Result.Failure
+
+        assertEquals(
+            "CRC mismatch: expected 6D36, received 6D37",
+            result.reason
         )
     }
 
@@ -117,6 +178,8 @@ class CipherBeamPacketTest {
             result.reason
         )
     }
+
+
 
     @Test
     fun parserRejectsUnsupportedVersion() {
@@ -231,8 +294,8 @@ class CipherBeamPacketTest {
                 0x00.toByte(),
                 0x01.toByte(),
                 0x41.toByte(),
-                0x00.toByte(),
-                0x00.toByte()
+                0x99.toByte(),
+                0xA0.toByte()
             )
 
         val result =

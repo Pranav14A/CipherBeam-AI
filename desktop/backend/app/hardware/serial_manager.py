@@ -10,6 +10,7 @@ goes through SerialManager, so pyserial only appears in this one file.
 from __future__ import annotations
 
 import threading
+import time
 from enum import Enum
 
 import serial
@@ -83,7 +84,7 @@ class SerialManager:
 
     The manager uses a default 2-second timeout for normal commands.
     Individual long-running commands may provide their own timeout through
-    `request(..., timeout=...)`.
+    `request(..., timeout=...)` or `request_until(...)`.
     """
 
     def __init__(
@@ -143,8 +144,8 @@ class SerialManager:
             timeout: Optional per-request read timeout in seconds.
 
         When `timeout` is omitted, the manager's normal timeout is used.
-        This allows long-running optical transmission commands to have a
-        longer timeout without changing the timeout for normal commands.
+        This allows normal commands to keep their short timeout while
+        long-running commands use `request_until(...)`.
         """
         with self._lock:
             self._connect_unlocked()
@@ -157,6 +158,54 @@ class SerialManager:
             )
 
         return response
+
+    def request_until(
+        self,
+        command: str,
+        expected: str,
+        timeout: float | None = None,
+    ) -> str:
+        """Send a command and wait until the expected response line is received.
+
+        This is intended for long-running ESP32 operations whose serial port
+        may produce intermediate output before the final completion response.
+
+        The timeout applies to the entire operation, not to each individual
+        response line.
+
+        All intermediate response lines are consumed and ignored until the
+        expected terminal response is received.
+
+        The serial-manager lock remains held for the entire operation, so a
+        second command cannot be sent until the first operation has actually
+        produced its expected completion response.
+        """
+        effective_timeout = (
+            self._timeout if timeout is None else timeout
+        )
+
+        if effective_timeout <= 0:
+            raise ValueError("Timeout must be greater than zero.")
+
+        deadline = time.monotonic() + effective_timeout
+
+        with self._lock:
+            self._connect_unlocked()
+            self._send_unlocked(command)
+
+            while True:
+                remaining = deadline - time.monotonic()
+
+                if remaining <= 0:
+                    raise SerialTimeoutError(
+                        f"No '{expected}' response within "
+                        f"{effective_timeout}s."
+                    )
+
+                response = self._read_unlocked(timeout=remaining)
+
+                if response == expected:
+                    return response
 
     # --- internal helpers: assume `self._lock` is already held ---
 
@@ -175,9 +224,9 @@ class SerialManager:
             self._serial = None
             raise PortUnavailableError(
                 f"Could not open {self._port}: {exc}. Check that the port "
-                "exists, the ESP32 is plugged in via its COM (not USB-OTG) "
-                "port, and no other program (e.g. Arduino Serial Monitor) "
-                "currently has it open."
+                f"exists, the ESP32 is plugged in via its COM (not USB-OTG) "
+                f"port, and no other program (e.g. Arduino Serial Monitor) "
+                f"currently has it open."
             ) from exc
 
     def _disconnect_unlocked(self) -> None:
@@ -203,8 +252,6 @@ class SerialManager:
         if not self.is_connected():
             raise NotConnectedError()
 
-        # Preserve the normal SerialManager timeout. A custom timeout is
-        # applied only to this individual read.
         original_timeout = self._serial.timeout
 
         if timeout is not None:
@@ -218,8 +265,6 @@ class SerialManager:
                 f"Lost connection while reading response: {exc}"
             ) from exc
         finally:
-            # Restore the original timeout so future normal requests still
-            # use the configured 2-second timeout.
             self._serial.timeout = original_timeout
 
         if not raw:

@@ -68,11 +68,12 @@ class OpticalDecoder(
          */
         private const val GREEN_CONFIRM_SAMPLES = 3
 
+
         /*
          * RED must remain in the new state for this duration before
          * the decoder accepts the transition.
          */
-        private const val RED_STABILITY_DURATION_NS = 50_000_000L
+        private const val RED_STABILITY_DURATION_NS = 20_000_000L
     }
 
     private var state = State.WAITING_FOR_START

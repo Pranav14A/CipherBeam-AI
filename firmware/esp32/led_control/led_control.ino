@@ -195,8 +195,76 @@ void updateOpticalTest() {
 
 
 // ==========================================================================
-// Packet construction
+// CRC-16/CCITT-FALSE
 // ==========================================================================
+//
+// Parameters:
+//   Width      = 16
+//   Polynomial = 0x1021
+//   Initial    = 0xFFFF
+//   RefIn      = false
+//   RefOut     = false
+//   XorOut     = 0x0000
+//
+// CRC coverage:
+//   VERSION + FLAGS + LENGTH + PAYLOAD
+//
+// SYNC is intentionally excluded.
+//
+// ==========================================================================
+
+uint16_t calculateCipherBeamCrc(
+  byte version,
+  byte flags,
+  byte payloadLength,
+  const byte* payload
+) {
+
+  uint16_t crc = 0xFFFF;
+
+
+  // ------------------------------------------------------------------------
+  // Process one byte
+  // ------------------------------------------------------------------------
+
+  auto updateCrc = [&](byte value) {
+
+    crc ^= ((uint16_t)value << 8);
+
+
+    for (int bit = 0; bit < 8; bit++) {
+
+      if (crc & 0x8000) {
+
+        crc =
+          (crc << 1) ^ 0x1021;
+
+      } else {
+
+        crc =
+          crc << 1;
+      }
+    }
+  };
+
+
+  // ------------------------------------------------------------------------
+  // CRC coverage
+  // ------------------------------------------------------------------------
+
+  updateCrc(version);
+  updateCrc(flags);
+  updateCrc(payloadLength);
+
+
+  for (int i = 0; i < payloadLength; i++) {
+
+    updateCrc(payload[i]);
+  }
+
+
+  return crc;
+}
 
 bool buildCipherBeamPacket(String message) {
 
@@ -277,20 +345,39 @@ bool buildCipherBeamPacket(String message) {
   }
 
 
-  // ------------------------------------------------------------------------
-  // CRC
-  //
-  // Phase 13 will replace this placeholder with the
-  // actual CRC calculation.
-  //
-  // Big-endian:
-  //
-  //   CRC high byte
-  //   CRC low byte
-  // ------------------------------------------------------------------------
+// ------------------------------------------------------------------------
+// CRC
+//
+// CRC-16/CCITT-FALSE
+//
+// Coverage:
+//   VERSION + FLAGS + LENGTH + PAYLOAD
+//
+// SYNC is excluded.
+//
+// Big-endian:
+//
+//   CRC high byte
+//   CRC low byte
+// ------------------------------------------------------------------------
 
-  opticalTxPacket[index++] = 0x00;
-  opticalTxPacket[index++] = 0x00;
+uint16_t crc =
+  calculateCipherBeamCrc(
+    CIPHERBEAM_VERSION,
+    CIPHERBEAM_FLAGS,
+    (byte)payloadLength,
+    &opticalTxPacket[4]
+  );
+Serial.print("CRC: ");
+Serial.println(crc, HEX);
+
+opticalTxPacket[index++] =
+  (byte)((crc >> 8) & 0xFF);
+
+opticalTxPacket[index++] =
+  (byte)(crc & 0xFF);
+
+
 
 
   opticalTxPacketLength =
@@ -675,16 +762,46 @@ void loop() {
   // is active.
   // ------------------------------------------------------------------------
 
-  if (
-    !opticalTestActive &&
-    opticalTxState == TX_IDLE &&
-    Serial.available()
-  ) {
+    // ------------------------------------------------------------------------
+  // Serial command processing
+  //
+  // Always consume incoming commands.
+  //
+  // If an optical transmission is already active, reject a new
+  // TRANSMIT command instead of leaving it queued in the serial buffer.
+  // This prevents old messages from being transmitted later.
+  // ------------------------------------------------------------------------
+
+  if (Serial.available()) {
 
     String command =
       Serial.readStringUntil('\n');
 
     command.trim();
+
+
+    // ----------------------------------------------------------------------
+    // Reject commands that require idle hardware while transmission is active
+    // ----------------------------------------------------------------------
+
+    if (
+      opticalTestActive ||
+      opticalTxState != TX_IDLE
+    ) {
+
+      if (
+        command.startsWith("TRANSMIT:")
+      ) {
+
+        Serial.println("TRANSMIT_BUSY");
+
+      } else {
+
+        Serial.println("BUSY");
+      }
+
+      return;
+    }
 
 
     // ----------------------------------------------------------------------
@@ -786,10 +903,8 @@ void loop() {
       ) {
 
         /*
-         * No immediate response.
-         *
-         * TRANSMIT_DONE is sent after
-         * the complete optical frame.
+         * TRANSMIT_DONE is sent only after the
+         * complete optical transmission finishes.
          */
 
       } else {

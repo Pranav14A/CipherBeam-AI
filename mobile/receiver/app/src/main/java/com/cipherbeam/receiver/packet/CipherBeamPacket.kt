@@ -14,7 +14,18 @@ package com.cipherbeam.receiver.packet
  *   PAYLOAD 0–100 bytes
  *   CRC     2 bytes
  *
- * Phase 9 defines the packet structure.
+ * CRC:
+ *   CRC-16/CCITT-FALSE
+ *   Polynomial: 0x1021
+ *   Initial value: 0xFFFF
+ *   Input/output reflection: disabled
+ *   XOR output: 0x0000
+ *
+ * CRC is calculated over:
+ *
+ *   VERSION + FLAGS + LENGTH + PAYLOAD
+ *
+ * SYNC is excluded from CRC.
  */
 data class CipherBeamPacket(
     val version: Int,
@@ -38,6 +49,58 @@ data class CipherBeamPacket(
             HEADER_SIZE +
                     MAX_PAYLOAD_LENGTH +
                     CRC_SIZE
+
+        /**
+         * Calculate CRC-16/CCITT-FALSE over:
+         *
+         * VERSION + FLAGS + LENGTH + PAYLOAD
+         *
+         * SYNC is intentionally excluded.
+         */
+        fun calculateCrc(
+            version: Int,
+            flags: Int,
+            payload: ByteArray
+        ): Int {
+            require(version in 0..0xFF) {
+                "Version must be an unsigned byte"
+            }
+
+            require(flags in 0..0xFF) {
+                "Flags must be an unsigned byte"
+            }
+
+            require(payload.size <= MAX_PAYLOAD_LENGTH) {
+                "Payload exceeds maximum length of $MAX_PAYLOAD_LENGTH bytes"
+            }
+
+            var crc = 0xFFFF
+
+            fun update(byteValue: Int) {
+                crc = crc xor ((byteValue and 0xFF) shl 8)
+
+                repeat(8) {
+                    crc =
+                        if ((crc and 0x8000) != 0) {
+                            (crc shl 1) xor 0x1021
+                        } else {
+                            crc shl 1
+                        }
+
+                    crc = crc and 0xFFFF
+                }
+            }
+
+            update(version)
+            update(flags)
+            update(payload.size)
+
+            for (byte in payload) {
+                update(byte.toInt())
+            }
+
+            return crc and 0xFFFF
+        }
     }
 
     init {
