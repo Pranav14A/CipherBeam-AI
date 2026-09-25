@@ -55,6 +55,9 @@ class RedLedAnalyzer(
     )
 
     private val busy = AtomicBoolean(false)
+    private val openCvSignalProcessor = OpenCvSignalProcessor()
+
+    private var lastOpenCvLogTimestampNs: Long? = null
 
     private companion object {
         const val DIAGNOSTIC_TAG = "CipherBeamDiag"
@@ -222,6 +225,41 @@ class RedLedAnalyzer(
                         sample = sampleCenterChroma(image)
                     )
                 }
+            val openCvResult =
+                openCvSignalProcessor.process(
+                    image = image,
+                    centerX = redLocatedSample.centerX,
+                    centerY = redLocatedSample.centerY
+                )
+
+            val previousOpenCvLogTimestampNs =
+                lastOpenCvLogTimestampNs
+
+            if (
+                previousOpenCvLogTimestampNs == null ||
+                image.imageInfo.timestamp - previousOpenCvLogTimestampNs >=
+                DIAGNOSTIC_INTERVAL_NS
+            ) {
+                lastOpenCvLogTimestampNs = image.imageInfo.timestamp
+
+                if (openCvResult.valid) {
+                    Log.d(
+                        "CipherBeamOpenCV",
+                        "ROI=${openCvResult.roiLeft},${openCvResult.roiTop}," +
+                                "${openCvResult.roiWidth}x${openCvResult.roiHeight} " +
+                                "R=${"%.1f".format(openCvResult.meanRed)} " +
+                                "G=${"%.1f".format(openCvResult.meanGreen)} " +
+                                "B=${"%.1f".format(openCvResult.meanBlue)} " +
+                                "redDom=${"%.4f".format(openCvResult.redDominance)} " +
+                                "greenDom=${"%.4f".format(openCvResult.greenDominance)}"
+                    )
+                } else {
+                    Log.d(
+                        "CipherBeamOpenCV",
+                        "ROI processing invalid"
+                    )
+                }
+            }
 
             if (
                 redCenterX == null &&
@@ -337,6 +375,7 @@ class RedLedAnalyzer(
         greenTracker.reset()
 
         lastDiagnosticTimestampNs = null
+        lastOpenCvLogTimestampNs = null
         fpsWindowStartNs = null
         fpsFrameCount = 0
 
