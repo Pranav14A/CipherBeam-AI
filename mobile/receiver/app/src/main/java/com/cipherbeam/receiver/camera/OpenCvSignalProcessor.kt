@@ -96,43 +96,10 @@ class OpenCvSignalProcessor {
                 ?: return invalidResult()
 
         /*
-         * Keep the existing plane-copy implementation for this test.
+         * The ROI is calculated before reading the planes.
          *
-         * This means Test A isolates the expensive full-frame
-         * YUV -> RGB conversion while leaving plane extraction unchanged.
-         */
-        val yBytes =
-            copyPlane(
-                plane = yPlane,
-                width = width,
-                height = height
-            )
-
-        val chromaWidth =
-            width / 2
-
-        val chromaHeight =
-            height / 2
-
-        val uBytes =
-            copyPlane(
-                plane = uPlane,
-                width = chromaWidth,
-                height = chromaHeight
-            )
-
-        val vBytes =
-            copyPlane(
-                plane = vPlane,
-                width = chromaWidth,
-                height = chromaHeight
-            )
-
-        /*
-         * Original analyzer-sized ROI.
-         *
-         * The ROI itself is kept as close as possible to the existing
-         * 8% × 8% dimensions, but I420 requires even dimensions.
+         * This allows Test B to avoid creating full-frame Y/U/V
+         * intermediate ByteArrays.
          */
         val roi =
             createRoi(
@@ -143,16 +110,7 @@ class OpenCvSignalProcessor {
             )
 
         /*
-         * Build only the ROI-sized I420 buffer.
-         *
-         * Y plane:
-         *   roi.width × roi.height
-         *
-         * U plane:
-         *   roi.width/2 × roi.height/2
-         *
-         * V plane:
-         *   roi.width/2 × roi.height/2
+         * I420 chroma is sampled at half resolution.
          */
         val roiChromaWidth =
             roi.width / 2
@@ -166,6 +124,17 @@ class OpenCvSignalProcessor {
         val roiChromaSize =
             roiChromaWidth * roiChromaHeight
 
+        /*
+         * This is now the ONLY YUV byte array created for the frame.
+         *
+         * It contains:
+         *
+         * Y
+         * U
+         * V
+         *
+         * for the localized ROI only.
+         */
         val roiI420 =
             ByteArray(
                 roiYSize +
@@ -173,29 +142,31 @@ class OpenCvSignalProcessor {
                         roiChromaSize
             )
 
-        /*
-         * Copy localized Y.
-         */
         var destinationOffset = 0
 
-        for (row in 0 until roi.height) {
-
-            val sourceOffset =
-                (roi.y + row) * width +
-                        roi.x
-
-            yBytes.copyInto(
+        /*
+         * Copy ONLY the localized Y ROI.
+         */
+        val copiedY =
+            copyPlaneRoi(
+                plane = yPlane,
+                sourceLeft = roi.x,
+                sourceTop = roi.y,
+                width = roi.width,
+                height = roi.height,
                 destination = roiI420,
-                destinationOffset = destinationOffset,
-                startIndex = sourceOffset,
-                endIndex = sourceOffset + roi.width
+                destinationOffset = destinationOffset
             )
 
-            destinationOffset += roi.width
+        if (!copiedY) {
+            return invalidResult()
         }
 
+        destinationOffset +=
+            roiYSize
+
         /*
-         * Copy localized U.
+         * U/V planes are half resolution.
          */
         val chromaLeft =
             roi.x / 2
@@ -203,51 +174,49 @@ class OpenCvSignalProcessor {
         val chromaTop =
             roi.y / 2
 
-        for (row in 0 until roiChromaHeight) {
-
-            val sourceOffset =
-                (chromaTop + row) * chromaWidth +
-                        chromaLeft
-
-            uBytes.copyInto(
+        /*
+         * Copy ONLY the localized U ROI.
+         */
+        val copiedU =
+            copyPlaneRoi(
+                plane = uPlane,
+                sourceLeft = chromaLeft,
+                sourceTop = chromaTop,
+                width = roiChromaWidth,
+                height = roiChromaHeight,
                 destination = roiI420,
-                destinationOffset = destinationOffset,
-                startIndex = sourceOffset,
-                endIndex = sourceOffset + roiChromaWidth
+                destinationOffset = destinationOffset
             )
 
-            destinationOffset += roiChromaWidth
+        if (!copiedU) {
+            return invalidResult()
         }
 
+        destinationOffset +=
+            roiChromaSize
+
         /*
-         * Copy localized V.
+         * Copy ONLY the localized V ROI.
          */
-        for (row in 0 until roiChromaHeight) {
-
-            val sourceOffset =
-                (chromaTop + row) * chromaWidth +
-                        chromaLeft
-
-            vBytes.copyInto(
+        val copiedV =
+            copyPlaneRoi(
+                plane = vPlane,
+                sourceLeft = chromaLeft,
+                sourceTop = chromaTop,
+                width = roiChromaWidth,
+                height = roiChromaHeight,
                 destination = roiI420,
-                destinationOffset = destinationOffset,
-                startIndex = sourceOffset,
-                endIndex = sourceOffset + roiChromaWidth
+                destinationOffset = destinationOffset
             )
 
-            destinationOffset += roiChromaWidth
+        if (!copiedV) {
+            return invalidResult()
         }
 
         /*
          * OpenCV now receives ONLY the localized ROI.
          *
-         * Previous implementation:
-         *
-         *   320 × 240 → RGB
-         *
-         * New implementation:
-         *
-         *   approximately 8% × 8% → RGB
+         * No full-frame YUV Mat is created.
          */
         val yuv =
             getYuvMat(
@@ -267,6 +236,11 @@ class OpenCvSignalProcessor {
                 columns = roi.width
             )
 
+        /*
+         * I420 → RGB.
+         *
+         * The input Mat contains only the localized ROI.
+         */
         Imgproc.cvtColor(
             yuv,
             rgb,
@@ -330,10 +304,15 @@ class OpenCvSignalProcessor {
         } catch (_: Exception) {
 
             invalidResult()
-
         }
     }
 
+    /**
+     * Create an even-aligned ROI suitable for I420.
+     *
+     * I420 uses 2×2 chroma subsampling, so the ROI origin and dimensions
+     * must be compatible with the chroma planes.
+     */
     private fun createRoi(
         width: Int,
         height: Int,
@@ -341,14 +320,6 @@ class OpenCvSignalProcessor {
         centerY: Int
     ): Rect {
 
-        /*
-         * I420 chroma is sampled at 2×2 resolution.
-         *
-         * Therefore:
-         * - ROI origin must be even
-         * - ROI width must be even
-         * - ROI height must be even
-         */
         val roiWidth =
             max(
                 2,
@@ -421,14 +392,34 @@ class OpenCvSignalProcessor {
     }
 
     /**
-     * Copy a YUV plane into a compact byte array while respecting
-     * Android's rowStride and pixelStride.
+     * Copy only a rectangular region from one YUV plane.
+     *
+     * This respects Android's:
+     * - rowStride
+     * - pixelStride
+     *
+     * No full-plane ByteArray is created.
      */
-    private fun copyPlane(
+    private fun copyPlaneRoi(
         plane: ImageProxy.PlaneProxy,
+        sourceLeft: Int,
+        sourceTop: Int,
         width: Int,
-        height: Int
-    ): ByteArray {
+        height: Int,
+        destination: ByteArray,
+        destinationOffset: Int
+    ): Boolean {
+
+        if (
+            sourceLeft < 0 ||
+            sourceTop < 0 ||
+            width <= 0 ||
+            height <= 0 ||
+            destinationOffset < 0 ||
+            destinationOffset + width * height > destination.size
+        ) {
+            return false
+        }
 
         val buffer =
             plane.buffer.duplicate()
@@ -439,38 +430,46 @@ class OpenCvSignalProcessor {
         val pixelStride =
             plane.pixelStride
 
-        val output =
-            ByteArray(
-                width * height
-            )
+        if (
+            rowStride <= 0 ||
+            pixelStride <= 0
+        ) {
+            return false
+        }
 
-        var outputIndex = 0
+        var outputIndex =
+            destinationOffset
 
-        for (y in 0 until height) {
+        for (row in 0 until height) {
+
+            val sourceRow =
+                sourceTop + row
 
             val rowStart =
-                y * rowStride
+                sourceRow * rowStride
 
-            for (x in 0 until width) {
+            for (column in 0 until width) {
+
+                val sourceColumn =
+                    sourceLeft + column
 
                 val bufferIndex =
                     rowStart +
-                            x * pixelStride
+                            sourceColumn * pixelStride
 
                 if (
-                    bufferIndex >= 0 &&
-                    bufferIndex < buffer.limit()
+                    bufferIndex < 0 ||
+                    bufferIndex >= buffer.limit()
                 ) {
-                    output[outputIndex++] =
-                        buffer.get(bufferIndex)
-                } else {
-                    output[outputIndex++] =
-                        0
+                    return false
                 }
+
+                destination[outputIndex++] =
+                    buffer.get(bufferIndex)
             }
         }
 
-        return output
+        return true
     }
 
     private fun getYuvMat(
