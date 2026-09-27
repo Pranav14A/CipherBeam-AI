@@ -21,11 +21,18 @@ import com.cipherbeam.receiver.camera.CameraPreview
 import com.cipherbeam.receiver.camera.RedLedAnalyzer
 import com.cipherbeam.receiver.optical.OpticalDecoder
 import com.cipherbeam.receiver.packet.CipherBeamPacket
+import android.util.Log
+import org.opencv.android.OpenCVLoader
 
 class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (OpenCVLoader.initLocal()) {
+            Log.i("CipherBeamOpenCV", "OpenCV initialized successfully")
+        } else {
+            Log.e("CipherBeamOpenCV", "OpenCV initialization failed")
+        }
 
         setContent {
             MaterialTheme {

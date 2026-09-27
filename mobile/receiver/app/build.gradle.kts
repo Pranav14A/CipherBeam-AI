@@ -61,6 +61,7 @@ dependencies {
     implementation("androidx.camera:camera-camera2:$cameraxVersion")
     implementation("androidx.camera:camera-lifecycle:$cameraxVersion")
     implementation("androidx.camera:camera-view:$cameraxVersion")
+    implementation("org.opencv:opencv:4.13.0")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

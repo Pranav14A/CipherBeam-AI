@@ -61,6 +61,16 @@ class RedLedAnalyzer(
         const val DIAGNOSTIC_INTERVAL_NS = 250_000_000L
 
         /*
+         * Performance instrumentation.
+         *
+         * These values are diagnostic only.
+         * They do not affect decoding.
+         */
+        const val PERFORMANCE_TAG = "CipherBeamPerf"
+        const val PERFORMANCE_WINDOW_NS = 1_000_000_000L
+        const val PERFORMANCE_FRAME_GAP_THRESHOLD_NS = 50_000_000L
+
+        /*
          * The previously validated small ROI.
          *
          * 8% of image width × 8% of image height.
@@ -100,6 +110,27 @@ class RedLedAnalyzer(
         const val RED_SAMPLE_MIN = 0.10f
         const val RED_TRACK_THRESHOLD = 0.10f
         const val RED_TRACK_MARGIN = 0.015f
+        const val RED_ACQUIRE_THRESHOLD = 0.15f
+        const val RED_ACQUIRE_MARGIN = 0.04f
+
+/*
+ * Physical geometry constraint.
+ *
+ * RED is always physically LEFT of GREEN.
+ *
+ * A small margin is required so that RED candidates
+ * immediately adjacent to GREEN are also rejected.
+ */
+
+        const val RED_MUST_BE_LEFT_MARGIN_FRACTION = 0.02f
+
+        /*
+         * Small tracking search around the expected RED position.
+         *
+         * This is deliberately much smaller than the old ±24% search.
+         */
+        const val RED_TRACK_SEARCH_RADIUS_FRACTION = 0.05f
+        const val RED_TRACK_SEARCH_STEP_FRACTION = 0.025f
     }
 
     private var lastDiagnosticTimestampNs: Long? = null
@@ -109,6 +140,25 @@ class RedLedAnalyzer(
 
     private var lastLoggedRedOn = false
     private var lastLoggedGreenOn = false
+
+    /*
+     * Performance instrumentation state.
+     *
+     * These counters are diagnostic only and do not participate
+     * in optical decoding.
+     */
+    private var perfWindowStartNs: Long? = null
+    private var perfFrameCount = 0
+
+    private var perfGreenTotalNs = 0L
+    private var perfRedTotalNs = 0L
+    private var perfTotalTotalNs = 0L
+
+    private var perfFrameGapTotalNs = 0L
+    private var perfMaxFrameGapNs = 0L
+    private var perfGapOver50MsCount = 0
+
+    private var perfPreviousFrameTimestampNs: Long? = null
 
     /*
      * GREEN localization state.
@@ -129,14 +179,122 @@ class RedLedAnalyzer(
      * Until RED has been located, start searching around the GREEN
      * transmitter position.
      */
+    /*
+    * RED localization state.
+    *
+    * GREEN is the primary spatial anchor.
+    * The physical arrangement is always:
+    *
+    *      RED        GREEN
+    *
+    * Therefore RED is expected to be LEFT of GREEN.
+    */
     private var redCenterX: Int? = null
     private var redCenterY: Int? = null
+
+    /*
+     * Learned RED position relative to GREEN.
+     *
+     * Example:
+     * GREEN = 600,400
+     * RED   = 500,400
+     *
+     * offsetX = -100
+     * offsetY = 0
+     */
+    private var redOffsetX: Int? = null
+    private var redOffsetY: Int? = null
+
+    private var redGeometryLocked = false
+    private var lastRedSearchCurrentRed = 0f
+    private var lastRedSearchBestRed = 0f
+    private var lastRedSearchReturnedRed = 0f
+
+    private var lastRedSearchCurrentX: Int? = null
+    private var lastRedSearchCurrentY: Int? = null
+    private var lastRedSearchBestX: Int? = null
+    private var lastRedSearchBestY: Int? = null
+
+    private var lastRedSearchMoved = false
+    private var lastLoggedRedTrackerOn = false
+
+    /*
+ * OpenCV diagnostic instrumentation.
+ *
+ * Diagnostic only:
+ * - does not control RED/GREEN detection
+ * - does not control decoding
+ * - runs periodically, not every frame
+ */
+    private fun isRedPhysicallyLeftOfGreen(
+        candidateX: Int,
+        candidateY: Int,
+        greenX: Int,
+        greenY: Int,
+        rotationDegrees: Int,
+        minimumMarginPx: Int
+    ): Boolean {
+        val dx = candidateX - greenX
+        val dy = candidateY - greenY
+
+        return when (rotationDegrees) {
+            0 -> {
+                dx <= -minimumMarginPx
+            }
+
+            90 -> {
+                dy >= minimumMarginPx
+            }
+
+            180 -> {
+                dx >= minimumMarginPx
+            }
+
+            270 -> {
+                dy <= -minimumMarginPx
+            }
+
+            else -> {
+                false
+            }
+        }
+    }
+    private val openCvDiagnosticProcessor =
+        OpenCvSignalProcessor()
+
+    private var lastOpenCvDiagnosticTimestampNs: Long? = null
 
     override fun analyze(image: ImageProxy) {
         if (!busy.compareAndSet(false, true)) {
             image.close()
             return
         }
+        Log.d(
+            "CipherBeamFrameInfo",
+            "width=${image.width} " +
+                    "height=${image.height} " +
+                    "cropRect=${image.cropRect} " +
+                    "rotation=${image.imageInfo.rotationDegrees}"
+        )
+
+        /*
+         * Performance timing starts after the busy guard.
+         *
+         * This measures the actual work performed by the analyzer
+         * for an accepted frame.
+         */
+        val analyzerStartNs =
+            System.nanoTime()
+
+        val frameTimestampNs =
+            image.imageInfo.timestamp
+
+        /*
+         * These are initialized before the try block so that every
+         * normal analyzer path has valid timing values.
+         */
+        var greenElapsedNs = 0L
+        var redElapsedNs = 0L
 
         try {
             /*
@@ -146,6 +304,9 @@ class RedLedAnalyzer(
              * so this same mechanism can relocate the transmitter
              * after camera movement.
              */
+            val greenStartNs =
+                System.nanoTime()
+
             val greenSearch =
                 findGreenCandidate(image)
 
@@ -168,9 +329,52 @@ class RedLedAnalyzer(
                 /*
                  * Re-anchor RED search to the newly detected GREEN position.
                  */
+                val lockedOffsetX = redOffsetX
+                val lockedOffsetY = redOffsetY
 
-                redCenterX = greenOnset.centerX
-                redCenterY = greenOnset.centerY
+                if (
+                    redGeometryLocked &&
+                    lockedOffsetX != null &&
+                    lockedOffsetY != null
+                ) {
+                    /*
+                     * Follow RED using the learned RED↔GREEN relationship.
+                     */
+                    redCenterX =
+                        (
+                                greenOnset.centerX +
+                                        lockedOffsetX
+                                ).coerceIn(
+                                0,
+                                image.width - 1
+                            )
+
+                    redCenterY =
+                        (
+                                greenOnset.centerY +
+                                        lockedOffsetY
+                                ).coerceIn(
+                                0,
+                                image.height - 1
+                            )
+                } else {
+                    /*
+                     * RED has not been acquired yet.
+                     *
+                     * Start from GREEN and let the acquisition search
+                     * find the actual RED position.
+                     */
+                    redCenterX = greenOnset.centerX
+                    redCenterY = greenOnset.centerY
+                }
+                Log.d(
+                    "CipherBeamGeometry",
+                    "GREEN=${greenCenterX}x${greenCenterY} " +
+                            "RED=${redCenterX}x${redCenterY} " +
+                            "offsetX=${redOffsetX} " +
+                            "offsetY=${redOffsetY} " +
+                            "geometryLocked=$redGeometryLocked"
+                )
             }
 
             /*
@@ -194,9 +398,22 @@ class RedLedAnalyzer(
                 }
 
             /*
+             * GREEN timing includes:
+             *
+             * - 5 × 5 GREEN grid search
+             * - GREEN onset evaluation
+             * - localized GREEN sampling
+             */
+            greenElapsedNs =
+                System.nanoTime() - greenStartNs
+
+            /*
              * RED starts from the GREEN position until an actual RED
              * optical signal provides a stronger location.
              */
+            val redStartNs =
+                System.nanoTime()
+
             val initialRedCenterX =
                 redCenterX
                     ?: greenCenterX
@@ -223,6 +440,16 @@ class RedLedAnalyzer(
                     )
                 }
 
+            /*
+             * RED timing includes:
+             *
+             * - current RED ROI sample
+             * - 5 × 5 local search
+             * - RED tracking-center update
+             */
+            redElapsedNs =
+                System.nanoTime() - redStartNs
+
             if (
                 redCenterX == null &&
                 redCenterY == null &&
@@ -239,6 +466,57 @@ class RedLedAnalyzer(
             val redSignal =
                 redLocatedSample.sample.redness
                     .coerceAtLeast(0f)
+            /*
+ * OpenCV RED diagnostic.
+ *
+ * Uses the exact RED ROI selected by the existing analyzer.
+ * This does NOT replace or modify the current YUV RED signal.
+ */
+            val previousOpenCvDiagnosticTimestampNs =
+                lastOpenCvDiagnosticTimestampNs
+
+            val shouldRunOpenCvDiagnostic =
+                previousOpenCvDiagnosticTimestampNs == null ||
+                        frameTimestampNs -
+                        previousOpenCvDiagnosticTimestampNs >=
+                        DIAGNOSTIC_INTERVAL_NS
+
+            if (shouldRunOpenCvDiagnostic) {
+                val openCvResult =
+                    openCvDiagnosticProcessor.process(
+                        image = image,
+                        centerX = redLocatedSample.centerX,
+                        centerY = redLocatedSample.centerY
+                    )
+
+                if (openCvResult.valid) {
+                    Log.d(
+                        "CipherBeamOpenCvDiag",
+                        "RED_ROI " +
+                                "frame=${image.width}x${image.height} " +
+                                "center=${redLocatedSample.centerX}x${redLocatedSample.centerY} " +
+                                "roi=${openCvResult.roiLeft}," +
+                                "${openCvResult.roiTop}," +
+                                "${openCvResult.roiWidth}x" +
+                                "${openCvResult.roiHeight} " +
+                                "YUV_RED=${"%.4f".format(redLocatedSample.sample.redness)} " +
+                                "RGB_R=${"%.1f".format(openCvResult.meanRed)} " +
+                                "RGB_G=${"%.1f".format(openCvResult.meanGreen)} " +
+                                "RGB_B=${"%.1f".format(openCvResult.meanBlue)} " +
+                                "RGB_RED_DOM=${"%.4f".format(openCvResult.redDominance)}"
+                    )
+                } else {
+                    Log.d(
+                        "CipherBeamOpenCvDiag",
+                        "RED_ROI INVALID " +
+                                "frame=${image.width}x${image.height} " +
+                                "center=${redLocatedSample.centerX}x${redLocatedSample.centerY}"
+                    )
+                }
+
+                lastOpenCvDiagnosticTimestampNs =
+                    frameTimestampNs
+            }
 
             val greenSignal =
                 greenSample.greenness
@@ -253,6 +531,24 @@ class RedLedAnalyzer(
                 greenTracker.update(
                     greenSignal
                 )
+
+            if (redTracked.isOn != lastLoggedRedTrackerOn) {
+                Log.d(
+                    "CipherBeamRedDiag",
+                    "RED_STATE " +
+                            "tracker=${if (redTracked.isOn) 1 else 0} " +
+                            "current=${"%.3f".format(lastRedSearchCurrentRed)} " +
+                            "best=${"%.3f".format(lastRedSearchBestRed)} " +
+                            "returned=${"%.3f".format(lastRedSearchReturnedRed)} " +
+                            "currentLoc=${lastRedSearchCurrentX}x${lastRedSearchCurrentY} " +
+                            "bestLoc=${lastRedSearchBestX}x${lastRedSearchBestY} " +
+                            "moved=${lastRedSearchMoved} " +
+                            "redCenter=${redCenterX}x${redCenterY}"
+                )
+
+                lastLoggedRedTrackerOn =
+                    redTracked.isOn
+            }
 
             onOpticalSample(
                 image.imageInfo.timestamp,
@@ -325,6 +621,31 @@ class RedLedAnalyzer(
                 greenOn =
                     greenTracked.isOn
             )
+
+            /*
+             * Performance timing is intentionally recorded after
+             * the existing diagnostic/debug callbacks.
+             *
+             * Therefore totalMs represents the complete analyzer
+             * work for this accepted frame.
+             */
+            val analyzerTotalElapsedNs =
+                System.nanoTime() -
+                        analyzerStartNs
+
+            logPerformanceSample(
+                frameTimestampNs =
+                    frameTimestampNs,
+
+                greenElapsedNs =
+                    greenElapsedNs,
+
+                redElapsedNs =
+                    redElapsedNs,
+
+                totalElapsedNs =
+                    analyzerTotalElapsedNs
+            )
         } catch (_: Throwable) {
         } finally {
             image.close()
@@ -340,14 +661,44 @@ class RedLedAnalyzer(
         fpsWindowStartNs = null
         fpsFrameCount = 0
 
+        /*
+         * Reset performance instrumentation together with
+         * the optical signal state.
+         */
+        perfWindowStartNs = null
+        perfFrameCount = 0
+
+        perfGreenTotalNs = 0L
+        perfRedTotalNs = 0L
+        perfTotalTotalNs = 0L
+
+        perfFrameGapTotalNs = 0L
+        perfMaxFrameGapNs = 0L
+        perfGapOver50MsCount = 0
+
+        perfPreviousFrameTimestampNs = null
+
         lastLoggedRedOn = false
         lastLoggedGreenOn = false
+        lastLoggedRedTrackerOn = false
 
         greenCenterX = null
         greenCenterY = null
 
         redCenterX = null
         redCenterY = null
+
+        lastRedSearchCurrentRed = 0f
+        lastRedSearchBestRed = 0f
+        lastRedSearchReturnedRed = 0f
+
+        lastRedSearchCurrentX = null
+        lastRedSearchCurrentY = null
+        lastRedSearchBestX = null
+        lastRedSearchBestY = null
+
+        lastRedSearchMoved = false
+        lastOpenCvDiagnosticTimestampNs = null
 
         previousGreenScores =
             FloatArray(
@@ -356,6 +707,191 @@ class RedLedAnalyzer(
             )
 
         greenHistoryInitialized = false
+    }
+
+    /**
+     * Performance instrumentation.
+     *
+     * This function:
+     *
+     * - measures processed FPS
+     * - measures camera frame timestamp gaps
+     * - measures GREEN processing time
+     * - measures RED processing time
+     * - measures total analyzer processing time
+     * - counts frame gaps greater than 50 ms
+     *
+     * It logs approximately once per second.
+     *
+     * It does not affect optical decoding.
+     */
+    private fun logPerformanceSample(
+        frameTimestampNs: Long,
+        greenElapsedNs: Long,
+        redElapsedNs: Long,
+        totalElapsedNs: Long
+    ) {
+        val nowNs =
+            System.nanoTime()
+
+        if (perfWindowStartNs == null) {
+            perfWindowStartNs =
+                nowNs
+        }
+
+        perfFrameCount++
+
+        perfGreenTotalNs +=
+            greenElapsedNs
+
+        perfRedTotalNs +=
+            redElapsedNs
+
+        perfTotalTotalNs +=
+            totalElapsedNs
+
+        val previousFrameTimestampNs =
+            perfPreviousFrameTimestampNs
+
+        if (
+            previousFrameTimestampNs != null &&
+            frameTimestampNs >=
+            previousFrameTimestampNs
+        ) {
+            val frameGapNs =
+                frameTimestampNs -
+                        previousFrameTimestampNs
+
+            perfFrameGapTotalNs +=
+                frameGapNs
+
+            if (
+                frameGapNs >
+                perfMaxFrameGapNs
+            ) {
+                perfMaxFrameGapNs =
+                    frameGapNs
+            }
+
+            if (
+                frameGapNs >
+                PERFORMANCE_FRAME_GAP_THRESHOLD_NS
+            ) {
+                perfGapOver50MsCount++
+            }
+        }
+
+        perfPreviousFrameTimestampNs =
+            frameTimestampNs
+
+        val windowStartNs =
+            perfWindowStartNs
+                ?: nowNs
+
+        val elapsedWindowNs =
+            nowNs - windowStartNs
+
+        if (
+            elapsedWindowNs <
+            PERFORMANCE_WINDOW_NS
+        ) {
+            return
+        }
+
+        val elapsedWindowSeconds =
+            elapsedWindowNs /
+                    1_000_000_000.0
+
+        val processedFps =
+            if (
+                elapsedWindowSeconds > 0.0
+            ) {
+                perfFrameCount /
+                        elapsedWindowSeconds
+            } else {
+                0.0
+            }
+
+        val gapCount =
+            max(
+                0,
+                perfFrameCount - 1
+            )
+
+        val avgFrameGapMs =
+            if (gapCount > 0) {
+                perfFrameGapTotalNs /
+                        gapCount /
+                        1_000_000.0
+            } else {
+                0.0
+            }
+
+        val avgGreenMs =
+            if (perfFrameCount > 0) {
+                perfGreenTotalNs /
+                        perfFrameCount /
+                        1_000_000.0
+            } else {
+                0.0
+            }
+
+        val avgRedMs =
+            if (perfFrameCount > 0) {
+                perfRedTotalNs /
+                        perfFrameCount /
+                        1_000_000.0
+            } else {
+                0.0
+            }
+
+        val avgTotalMs =
+            if (perfFrameCount > 0) {
+                perfTotalTotalNs /
+                        perfFrameCount /
+                        1_000_000.0
+            } else {
+                0.0
+            }
+
+        val maxFrameGapMs =
+            perfMaxFrameGapNs /
+                    1_000_000.0
+
+        Log.i(
+            PERFORMANCE_TAG,
+            "frames=$perfFrameCount " +
+                    "fps=${"%.1f".format(processedFps)} " +
+                    "avgGapMs=${"%.1f".format(avgFrameGapMs)} " +
+                    "maxGapMs=${"%.1f".format(maxFrameGapMs)} " +
+                    "gapsOver50=$perfGapOver50MsCount " +
+                    "greenMs=${"%.2f".format(avgGreenMs)} " +
+                    "redMs=${"%.2f".format(avgRedMs)} " +
+                    "totalMs=${"%.2f".format(avgTotalMs)}"
+        )
+
+        /*
+         * Start a fresh performance window.
+         */
+        perfWindowStartNs =
+            nowNs
+
+        perfFrameCount = 0
+
+        perfGreenTotalNs = 0L
+        perfRedTotalNs = 0L
+        perfTotalTotalNs = 0L
+
+        perfFrameGapTotalNs = 0L
+        perfMaxFrameGapNs = 0L
+        perfGapOver50MsCount = 0
+
+        /*
+         * Keep the previous camera timestamp.
+         *
+         * This allows the first frame of the next performance
+         * window to still contribute a valid frame gap.
+         */
     }
 
     /**
@@ -441,7 +977,8 @@ class RedLedAnalyzer(
             previousGreenScores =
                 currentScores.copyOf()
 
-            greenHistoryInitialized = true
+            greenHistoryInitialized =
+                true
 
             return GreenSearchResult(
                 best = null,
@@ -459,8 +996,13 @@ class RedLedAnalyzer(
                 sortedScores.size / 2
             ]
 
-        var bestCandidate: GreenCandidate? = null
-        var onsetCandidate: GreenCandidate? = null
+        var bestCandidate:
+                GreenCandidate? =
+            null
+
+        var onsetCandidate:
+                GreenCandidate? =
+            null
 
         for (index in 0 until totalCells) {
             val sample =
@@ -475,13 +1017,16 @@ class RedLedAnalyzer(
                         previousGreenScores[index]
 
             val spatialMargin =
-                score - median
+                score -
+                        median
 
             val row =
-                index / GREEN_GRID_COLUMNS
+                index /
+                        GREEN_GRID_COLUMNS
 
             val column =
-                index % GREEN_GRID_COLUMNS
+                index %
+                        GREEN_GRID_COLUMNS
 
             val candidate =
                 GreenCandidate(
@@ -573,6 +1118,21 @@ class RedLedAnalyzer(
             current.sample.redness
                 .coerceAtLeast(0f)
 
+        /*
+         * Diagnostic only.
+         */
+        lastRedSearchCurrentRed =
+            currentRed
+
+        lastRedSearchCurrentX =
+            current.centerX
+
+        lastRedSearchCurrentY =
+            current.centerY
+
+        lastRedSearchMoved =
+            false
+
         for (offsetY in offsets) {
             for (offsetX in offsets) {
                 if (
@@ -606,29 +1166,57 @@ class RedLedAnalyzer(
                             image.height - 1
                         )
 
+                val currentGreenX =
+                    greenCenterX
+
+                val currentGreenY =
+                    greenCenterY
+
+                if (
+                    currentGreenX != null &&
+                    currentGreenY != null
+                ) {
+                    val minimumLeftMarginPx =
+                        (
+                                image.width *
+                                        RED_MUST_BE_LEFT_MARGIN_FRACTION
+                                ).toInt()
+
+                    val physicallyLeft =
+                        isRedPhysicallyLeftOfGreen(
+                            candidateX = candidateCenterX,
+                            candidateY = candidateCenterY,
+                            greenX = currentGreenX,
+                            greenY = currentGreenY,
+                            rotationDegrees =
+                                image.imageInfo.rotationDegrees,
+                            minimumMarginPx =
+                                minimumLeftMarginPx
+                        )
+
+                    if (!physicallyLeft) {
+                        continue
+                    }
+                }
+
                 val sample =
                     sampleRegionAroundCenter(
-                        image =
-                            image,
-
-                        centerX =
-                            candidateCenterX,
-
-                        centerY =
-                            candidateCenterY
+                        image = image,
+                        centerX = candidateCenterX,
+                        centerY = candidateCenterY
                     )
 
                 val candidateRed =
                     sample.redness
                         .coerceAtLeast(0f)
 
-                val bestRed =
+                val bestRedSoFar =
                     best.sample.redness
                         .coerceAtLeast(0f)
 
                 if (
                     candidateRed >
-                    bestRed
+                    bestRedSoFar
                 ) {
                     best =
                         LocatedSample(
@@ -645,37 +1233,139 @@ class RedLedAnalyzer(
             }
         }
 
+        /*
+         * Evaluate the FINAL best candidate after
+         * the entire search has completed.
+         */
         val bestRed =
             best.sample.redness
                 .coerceAtLeast(0f)
 
         /*
+         * RED SEARCH DIAGNOSTIC.
+         *
+         * This is intentionally placed AFTER the complete
+         * 5 × 5 search and BEFORE acquisition/geometry locking.
+         *
+         * It does not affect detection or decoding.
+         */
+        Log.d(
+            "CipherBeamRedSearch",
+            "current=${current.centerX}x${current.centerY} " +
+                    "currentRed=${"%.3f".format(currentRed)} " +
+                    "best=${best.centerX}x${best.centerY} " +
+                    "bestRed=${"%.3f".format(bestRed)}"
+        )
+
+        /*
+         * Diagnostic only.
+         */
+        lastRedSearchBestRed =
+            bestRed
+
+        lastRedSearchBestX =
+            best.centerX
+
+        lastRedSearchBestY =
+            best.centerY
+
+        /*
          * Only move the RED tracking center when the new location
          * provides meaningful evidence above the current location.
+         *
+         * Existing behavior unchanged.
          */
         if (
-            bestRed >= RED_TRACK_THRESHOLD &&
+            !redGeometryLocked &&
+            bestRed >= RED_ACQUIRE_THRESHOLD &&
             bestRed >=
             currentRed +
-            RED_TRACK_MARGIN
+            RED_ACQUIRE_MARGIN
         ) {
-            redCenterX =
-                best.centerX
+            val currentGreenX =
+                greenCenterX
 
-            redCenterY =
-                best.centerY
+            val currentGreenY =
+                greenCenterY
+
+            if (
+                currentGreenX != null &&
+                currentGreenY != null
+            ) {
+                val candidateOffsetX =
+                    best.centerX - currentGreenX
+
+                val candidateOffsetY =
+                    best.centerY - currentGreenY
+
+                val physicallyLeft =
+                    isRedPhysicallyLeftOfGreen(
+                        candidateX = best.centerX,
+                        candidateY = best.centerY,
+                        greenX = currentGreenX,
+                        greenY = currentGreenY,
+                        rotationDegrees =
+                            image.imageInfo.rotationDegrees,
+                        minimumMarginPx =
+                            (
+                                    image.width *
+                                            RED_MUST_BE_LEFT_MARGIN_FRACTION
+                                    ).toInt()
+                    )
+
+                if (physicallyLeft) {
+                    redCenterX =
+                        best.centerX
+
+                    redCenterY =
+                        best.centerY
+
+                    redOffsetX =
+                        candidateOffsetX
+
+                    redOffsetY =
+                        candidateOffsetY
+
+                    redGeometryLocked =
+                        true
+
+                    Log.d(
+                        "CipherBeamGeometry",
+                        "LOCKED " +
+                                "GREEN=${currentGreenX}x${currentGreenY} " +
+                                "RED=${best.centerX}x${best.centerY} " +
+                                "offsetX=$candidateOffsetX " +
+                                "offsetY=$candidateOffsetY " +
+                                "rotation=${image.imageInfo.rotationDegrees} " +
+                                "redness=${"%.3f".format(bestRed)}"
+                    )
+                }
+            }
         }
 
         /*
          * Use the stronger local sample for the current frame when
          * there is enough RED evidence to justify it.
+         *
+         * Existing selection logic unchanged.
          */
-        return if (
+        val useBest =
             bestRed >= RED_SAMPLE_MIN &&
-            bestRed >
-            currentRed +
-            0.02f
-        ) {
+                    bestRed >
+                    currentRed +
+                    0.02f
+
+        /*
+         * Diagnostic only.
+         */
+        lastRedSearchReturnedRed =
+            if (useBest) {
+                bestRed
+            } else {
+                currentRed
+            }
+
+        return if (useBest) {
             best
         } else {
             current
@@ -853,7 +1543,8 @@ class RedLedAnalyzer(
             }
 
         @Suppress("UNUSED_VARIABLE")
-        val unusedWidthGuard = width
+        val unusedWidthGuard =
+            width
 
         Log.d(
             DIAGNOSTIC_TAG,
