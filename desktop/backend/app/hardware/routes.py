@@ -160,6 +160,46 @@ class TransmitRequest(BaseModel):
         description="Printable ASCII message to transmit optically.",
     )
 
+    algorithm_id: int = Field(
+        description=(
+            "CipherBeam algorithm ID: "
+            "1 = ChaCha20-Poly1305, "
+            "2 = AES-256-GCM."
+        )
+    )
+
+    @field_validator("algorithm_id")
+    @classmethod
+    def validate_algorithm_id(cls, value: int) -> int:
+        if value not in (1, 2):
+            raise ValueError(
+                "Unsupported algorithm_id. "
+                "Use 1 for ChaCha20-Poly1305 or "
+                "2 for AES-256-GCM."
+            )
+
+        return value
+
+    @field_validator("message")
+    @classmethod
+    def validate_message(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Message cannot be empty or whitespace only.")
+
+        try:
+            value.encode("ascii")
+        except UnicodeEncodeError as exc:
+            raise ValueError(
+                "Message must contain ASCII characters only."
+            ) from exc
+
+        if any(ord(char) < 0x20 or ord(char) > 0x7E for char in value):
+            raise ValueError(
+                "Message must contain printable ASCII characters only."
+            )
+
+        return value
+
     @field_validator("message")
     @classmethod
     def validate_message(cls, value: str) -> str:
@@ -243,7 +283,10 @@ async def hardware_transmit(
 ) -> TransmitResponse:
     """Transmit a message using the current CipherBeam optical packet."""
 
-    command = f"TRANSMIT:{payload.message}"
+    command = (
+    f"TRANSMIT:{payload.algorithm_id}:"
+    f"{payload.message}"
+)
     timeout = calculate_transmit_timeout(payload.message)
 
     try:

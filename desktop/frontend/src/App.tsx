@@ -4,6 +4,7 @@ import './App.css'
 type BackendStatus = 'checking' | 'online' | 'offline'
 type HardwareStatus = 'checking' | 'connected' | 'disconnected'
 type LedState = 'on' | 'off'
+type AlgorithmId = 1 | 2
 
 const BACKEND_HEALTH_URL = 'http://localhost:8000/health'
 const HARDWARE_STATUS_URL = 'http://localhost:8000/hardware/status'
@@ -22,6 +23,7 @@ function App() {
   const [ledMessage, setLedMessage] = useState<string | null>(null)
 
   const [message, setMessage] = useState('')
+  const [algorithmId, setAlgorithmId] = useState<AlgorithmId>(1)
   const [transmitting, setTransmitting] = useState(false)
   const [transmitMessage, setTransmitMessage] = useState<string | null>(null)
 
@@ -117,7 +119,7 @@ function App() {
       const response = await fetch(HARDWARE_TRANSMIT_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message }),
+        body: JSON.stringify({ message, algorithm_id: algorithmId }),
       })
 
       const data = await response.json()
@@ -207,6 +209,19 @@ function App() {
         )}
 
         <h2 className="led-heading">OPTICAL TRANSMISSION</h2>
+
+        <p className="label">
+          Algorithm:
+        </p>
+
+        <select
+          value={algorithmId}
+          onChange={(event) => setAlgorithmId(parseInt(event.target.value) as AlgorithmId)}
+          disabled={transmitting}
+        >
+          <option value={1}>ChaCha20-Poly1305</option>
+          <option value={2}>AES-256-GCM</option>
+        </select>
 
         <p className="label">
           Message:

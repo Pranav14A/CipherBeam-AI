@@ -14,24 +14,23 @@
  *
  *   GREEN START       600 ms
  *   GREEN OFF GUARD   200 ms
- *   RED DATA          200 ms / bit, MSB first
+ *   RED DATA          150 ms / bit, MSB first
  *   RED OFF GUARD     200 ms
  *   GREEN END         600 ms
  *
- * Logical packet:
- *
- *   SYNC       1 byte
- *   VERSION    1 byte
- *   FLAGS      1 byte
- *   LENGTH     1 byte
- *   PAYLOAD    0..100 bytes
- *   CRC        2 bytes
- *
- * Current CRC value:
- *
- *   0x0000
- *
- * Actual CRC implementation belongs to the later CRC phase.
+ *CRC-16/CCITT-FALSE
+ *Polynomial = 0x1021
+ *Initial value = 0xFFFF
+ *RefIn = false
+ *RefOut = false
+ *XorOut = 0x0000
+
+ *CRC coverage:
+ *VERSION + FLAGS + LENGTH + PAYLOAD
+
+ *SYNC byte is excluded from CRC.
+
+ *CRC is transmitted big-endian.
  *
  * Example:
  *
@@ -39,7 +38,8 @@
  *
  * Produces:
  *
- *   A5 01 00 05 48 45 4C 4C 4F 00 00
+ *   HELLO packet:
+ *  A5 01 00 05 48 45 4C 4C 4F 6D 36
  *
  * Red LED transmits those bytes MSB first.
  *
@@ -73,7 +73,9 @@ const unsigned long OPTICAL_BIT_DURATION_MS = 150;
 
 const byte CIPHERBEAM_SYNC = 0xA5;
 const byte CIPHERBEAM_VERSION = 0x01;
-const byte CIPHERBEAM_FLAGS = 0x00;
+const byte CIPHERBEAM_SECURITY_PROFILE = 0x00;
+const byte CIPHERBEAM_ALGORITHM_CHACHA20_POLY1305 = 0x01;
+const byte CIPHERBEAM_ALGORITHM_AES_256_GCM = 0x02;
 
 const int CIPHERBEAM_MAX_PAYLOAD_LENGTH = 100;
 
@@ -266,10 +268,24 @@ uint16_t calculateCipherBeamCrc(
   return crc;
 }
 
-bool buildCipherBeamPacket(String message) {
+bool buildCipherBeamPacket(
+  String message,
+  byte algorithmId
+) {
 
   int payloadLength =
     message.length();
+    // ------------------------------------------------------------------------
+// Validate algorithm ID
+// ------------------------------------------------------------------------
+
+if (
+  algorithmId != CIPHERBEAM_ALGORITHM_CHACHA20_POLY1305 &&
+  algorithmId != CIPHERBEAM_ALGORITHM_AES_256_GCM
+) {
+
+  return false;
+}
 
 
   if (
@@ -305,7 +321,10 @@ bool buildCipherBeamPacket(String message) {
   // ------------------------------------------------------------------------
   // SYNC
   // ------------------------------------------------------------------------
-
+byte flags =
+  (CIPHERBEAM_SECURITY_PROFILE << 4) |
+  algorithmId;
+  
   opticalTxPacket[index++] =
     CIPHERBEAM_SYNC;
 
@@ -318,12 +337,14 @@ bool buildCipherBeamPacket(String message) {
     CIPHERBEAM_VERSION;
 
 
-  // ------------------------------------------------------------------------
-  // FLAGS
-  // ------------------------------------------------------------------------
+// ------------------------------------------------------------------------
+// FLAGS
+// ------------------------------------------------------------------------
 
-  opticalTxPacket[index++] =
-    CIPHERBEAM_FLAGS;
+
+
+opticalTxPacket[index++] =
+  flags;
 
 
   // ------------------------------------------------------------------------
@@ -364,7 +385,7 @@ bool buildCipherBeamPacket(String message) {
 uint16_t crc =
   calculateCipherBeamCrc(
     CIPHERBEAM_VERSION,
-    CIPHERBEAM_FLAGS,
+    flags,
     (byte)payloadLength,
     &opticalTxPacket[4]
   );
@@ -677,11 +698,17 @@ void updateOpticalTransmission() {
 // Start packet transmission
 // ==========================================================================
 
-bool startOpticalTransmission(String message) {
+bool startOpticalTransmission(
+  String message,
+  byte algorithmId
+) {
 
-  if (
-    !buildCipherBeamPacket(message)
-  ) {
+if (
+  !buildCipherBeamPacket(
+    message,
+    algorithmId
+  )
+) {
 
     return false;
   }
@@ -890,28 +917,79 @@ void loop() {
     // TRANSMIT:<message>
     // ----------------------------------------------------------------------
 
-    else if (
-      command.startsWith("TRANSMIT:")
-    ) {
+else if (
+  command.startsWith("TRANSMIT:")
+) {
 
-      String message =
-        command.substring(9);
+  String transmitData =
+    command.substring(9);
+
+  int separatorIndex =
+    transmitData.indexOf(':');
 
 
-      if (
-        startOpticalTransmission(message)
-      ) {
+  // ----------------------------------------------------------------------
+  // Require:
+  //
+  // TRANSMIT:<algorithm_id>:<message>
+  // ----------------------------------------------------------------------
 
-        /*
-         * TRANSMIT_DONE is sent only after the
-         * complete optical transmission finishes.
-         */
+  if (separatorIndex <= 0) {
 
-      } else {
+    Serial.println("TRANSMIT_ERROR");
 
-        Serial.println("TRANSMIT_ERROR");
-      }
-    }
+    return;
+  }
+
+
+  String algorithmText =
+    transmitData.substring(
+      0,
+      separatorIndex
+    );
+
+  String message =
+    transmitData.substring(
+      separatorIndex + 1
+    );
+
+
+  int algorithmId =
+    algorithmText.toInt();
+
+
+  // ----------------------------------------------------------------------
+  // Only the two approved algorithm IDs are accepted.
+  // ----------------------------------------------------------------------
+
+  if (
+    algorithmId != CIPHERBEAM_ALGORITHM_CHACHA20_POLY1305 &&
+    algorithmId != CIPHERBEAM_ALGORITHM_AES_256_GCM
+  ) {
+
+    Serial.println("TRANSMIT_ERROR");
+
+    return;
+  }
+
+
+  if (
+    startOpticalTransmission(
+      message,
+      (byte)algorithmId
+    )
+  ) {
+
+    /*
+     * TRANSMIT_DONE is sent only after the
+     * complete optical transmission finishes.
+     */
+
+  } else {
+
+    Serial.println("TRANSMIT_ERROR");
+  }
+}
 
 
     // ----------------------------------------------------------------------

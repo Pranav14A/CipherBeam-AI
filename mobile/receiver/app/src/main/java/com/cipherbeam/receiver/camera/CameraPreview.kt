@@ -28,7 +28,9 @@ fun CameraPreview(
     onBit: (Boolean) -> Unit,
     onDebug: (RedLedAnalyzer.DebugSample) -> Unit,
     onDecoderSnapshot: (OpticalDecoder.Snapshot) -> Unit,
-    onPacket: (CipherBeamPacket) -> Unit = {}
+    onPacket: (CipherBeamPacket) -> Unit = {},
+    onPacketFailure: (String) -> Unit = {}
+
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -111,6 +113,10 @@ fun CameraPreview(
                                         "CipherBeamPacket",
                                         "PACKET FAILURE: ${result.reason}"
                                     )
+                                    mainHandler.post {
+                                        onPacketFailure(result.reason)
+                                    }
+
                                 }
                             }
                         }

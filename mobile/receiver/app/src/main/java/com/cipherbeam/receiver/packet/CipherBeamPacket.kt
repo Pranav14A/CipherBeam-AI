@@ -34,6 +34,7 @@ data class CipherBeamPacket(
     val crc: Int? = null
 ) {
 
+
     companion object {
         const val PROTOCOL_VERSION = 0x01
         const val SYNC = 0xA5
@@ -101,6 +102,10 @@ data class CipherBeamPacket(
 
             return crc and 0xFFFF
         }
+        const val SECURITY_PROFILE_DEMO = 0x00
+
+        const val ALGORITHM_CHACHA20_POLY1305 = 0x01
+        const val ALGORITHM_AES_256_GCM = 0x02
     }
 
     init {
