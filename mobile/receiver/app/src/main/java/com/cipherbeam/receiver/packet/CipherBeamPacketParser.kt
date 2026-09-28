@@ -113,12 +113,55 @@ object CipherBeamPacketParser {
         }
 
         /*
-         * FLAGS
-         */
+ * FLAGS
+ */
         val flags =
             data[index].toInt() and 0xFF
 
         index++
+
+        /*
+         * SECURITY PROFILE
+         *
+         * High nibble of FLAGS.
+         *
+         * Currently supported:
+         *   0x0 = Demo profile
+         */
+        val securityProfile =
+            (flags ushr 4) and 0x0F
+
+        if (
+            securityProfile !=
+            CipherBeamPacket.SECURITY_PROFILE_DEMO
+        ) {
+            return Result.Failure(
+                "Unsupported security profile: $securityProfile"
+            )
+        }
+
+        /*
+         * ALGORITHM ID
+         *
+         * Low nibble of FLAGS.
+         *
+         * Currently supported:
+         *   0x1 = ChaCha20-Poly1305
+         *   0x2 = AES-256-GCM
+         */
+        val algorithmId =
+            flags and 0x0F
+
+        if (
+            algorithmId !=
+            CipherBeamPacket.ALGORITHM_CHACHA20_POLY1305 &&
+            algorithmId !=
+            CipherBeamPacket.ALGORITHM_AES_256_GCM
+        ) {
+            return Result.Failure(
+                "Unsupported algorithm ID: $algorithmId"
+            )
+        }
 
         /*
          * LENGTH

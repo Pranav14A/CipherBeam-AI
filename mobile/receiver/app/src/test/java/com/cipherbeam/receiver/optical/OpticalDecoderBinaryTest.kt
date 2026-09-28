@@ -9,6 +9,51 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class OpticalDecoderBinaryTest {
+    @Test
+    fun corruptedPacketFailsCrcValidation() {
+
+        val payload =
+            "HELLO".toByteArray(Charsets.US_ASCII)
+
+        val originalPacket =
+            CipherBeamPacket(
+                version = CipherBeamPacket.PROTOCOL_VERSION,
+                flags = 0x00,
+                payload = payload
+            )
+
+        val serializedPacket =
+            CipherBeamPacketSerializer.serialize(
+                originalPacket
+            )
+
+        /*
+         * Simulate corruption during optical transport.
+         *
+         * Flip one bit in the serialized packet.
+         * The CRC remains the original CRC, so the
+         * packet must fail validation.
+         */
+        val corruptedPacket =
+            serializedPacket.copyOf()
+
+        corruptedPacket[corruptedPacket.lastIndex] =
+            (corruptedPacket[corruptedPacket.lastIndex].toInt() xor 0x01)
+                .toByte()
+
+        val parseResult =
+            CipherBeamPacketParser.parse(
+                corruptedPacket
+            )
+
+        /*
+         * A corrupted packet must never be accepted
+         * as a valid CipherBeamPacket.
+         */
+        assertTrue(
+            parseResult is CipherBeamPacketParser.Result.Failure
+        )
+    }
 
     @Test
     fun serializedPacketSurvivesOpticalTransportAndParsesBack() {
@@ -92,7 +137,7 @@ class OpticalDecoderBinaryTest {
 
             repeat(10) {
 
-                timestampNs += 20_000_000L
+                timestampNs += 15_000_000L
 
                 decoder.feedOpticalSample(
                     timestampNs = timestampNs,
@@ -118,7 +163,7 @@ class OpticalDecoderBinaryTest {
                 greenOn = true
             )
 
-            timestampNs += 50_000_000L
+            timestampNs += 20_000_000L
         }
 
         val opticalSnapshot =
@@ -189,11 +234,21 @@ class OpticalDecoderBinaryTest {
         )
 
         /*
-         * Phase 13 CRC is not implemented yet,
-         * so the current placeholder is 0x0000.
+         * CRC-16/CCITT-FALSE is part of the serialized packet.
+         *
+         * VERSION = 0x01
+         * FLAGS   = 0x00
+         * LENGTH  = 0x05
+         * PAYLOAD = "HELLO"
+         *
+         * CRC input:
+         * 01 00 05 48 45 4C 4C 4F
+         *
+         * Expected CRC:
+         * 0x6D36
          */
         assertEquals(
-            0x0000,
+            0x6D36,
             parsedPacket.crc
         )
     }

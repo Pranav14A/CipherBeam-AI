@@ -16,7 +16,7 @@ class CipherBeamPacketTest {
         val packet =
             CipherBeamPacket(
                 version = CipherBeamPacket.PROTOCOL_VERSION,
-                flags = 0x00,
+                flags = CipherBeamPacket.ALGORITHM_CHACHA20_POLY1305,
                 payload = payload
             )
 
@@ -27,15 +27,15 @@ class CipherBeamPacketTest {
             byteArrayOf(
                 0xA5.toByte(),
                 0x01.toByte(),
-                0x00.toByte(),
+                0x01.toByte(),
                 0x05.toByte(),
                 0x48.toByte(),
                 0x45.toByte(),
                 0x4C.toByte(),
                 0x4C.toByte(),
                 0x4F.toByte(),
-                0x6D.toByte(),
-                0x36.toByte()
+                0xD5.toByte(),
+                0x57.toByte()
             )
 
         assertArrayEquals(
@@ -60,8 +60,18 @@ class CipherBeamPacketTest {
         )
 
         assertEquals(
-            0x00,
+            CipherBeamPacket.ALGORITHM_CHACHA20_POLY1305,
             result.packet.flags
+        )
+
+        assertEquals(
+            CipherBeamPacket.SECURITY_PROFILE_DEMO,
+            result.packet.securityProfile
+        )
+
+        assertEquals(
+            CipherBeamPacket.ALGORITHM_CHACHA20_POLY1305,
+            result.packet.algorithmId
         )
 
         assertEquals(
@@ -75,7 +85,7 @@ class CipherBeamPacketTest {
         )
 
         assertEquals(
-            0x6D36,
+            0xD557,
             result.packet.crc
         )
 
@@ -98,13 +108,31 @@ class CipherBeamPacketTest {
         val crc =
             CipherBeamPacket.calculateCrc(
                 version = CipherBeamPacket.PROTOCOL_VERSION,
-                flags = 0x00,
+                flags = CipherBeamPacket.ALGORITHM_CHACHA20_POLY1305,
                 payload = payload
             )
 
         assertEquals(
-            0x6D36,
+            0xD557,
             crc
+        )
+
+    }
+    @Test
+    fun algorithmIds_areCorrect() {
+        assertEquals(
+            0x01,
+            CipherBeamPacket.ALGORITHM_CHACHA20_POLY1305
+        )
+
+        assertEquals(
+            0x02,
+            CipherBeamPacket.ALGORITHM_AES_256_GCM
+        )
+
+        assertEquals(
+            0x00,
+            CipherBeamPacket.SECURITY_PROFILE_DEMO
         )
     }
 
@@ -117,7 +145,7 @@ class CipherBeamPacketTest {
         val packet =
             CipherBeamPacket(
                 version = CipherBeamPacket.PROTOCOL_VERSION,
-                flags = 0x00,
+                flags = CipherBeamPacket.ALGORITHM_CHACHA20_POLY1305,
                 payload = payload
             )
 
@@ -127,14 +155,14 @@ class CipherBeamPacketTest {
         /*
          * Corrupt the low CRC byte.
          *
-         * Correct CRC:
-         *   6D 36
-         *
-         * Corrupted CRC:
-         *   6D 37
+         *Correct CRC:
+            D5 57
+
+          Corrupted CRC:
+           D5 56
          */
         serialized[serialized.lastIndex] =
-            0x37.toByte()
+            0x56.toByte()
 
         val result =
             CipherBeamPacketParser.parse(serialized)
@@ -146,7 +174,7 @@ class CipherBeamPacketTest {
         result as CipherBeamPacketParser.Result.Failure
 
         assertEquals(
-            "CRC mismatch: expected 6D36, received 6D37",
+            "CRC mismatch: expected D557, received D556",
             result.reason
         )
     }
@@ -216,7 +244,7 @@ class CipherBeamPacketTest {
             byteArrayOf(
                 0xA5.toByte(),
                 0x01.toByte(),
-                0x00.toByte(),
+                0x01.toByte(),
                 101.toByte(),
                 0x00.toByte(),
                 0x00.toByte()
@@ -256,7 +284,7 @@ class CipherBeamPacketTest {
             byteArrayOf(
                 0xA5.toByte(),
                 0x01.toByte(),
-                0x00.toByte(),
+                0x01.toByte(),
                 0x05.toByte(),
                 0x48.toByte(),
                 0x45.toByte(),
@@ -291,11 +319,11 @@ class CipherBeamPacketTest {
 
                 0xA5.toByte(),
                 0x01.toByte(),
-                0x00.toByte(),
+                0x01.toByte(),
                 0x01.toByte(),
                 0x41.toByte(),
-                0x99.toByte(),
-                0xA0.toByte()
+                0xAE.toByte(),
+                0x90.toByte()
             )
 
         val result =
@@ -320,6 +348,341 @@ class CipherBeamPacketTest {
         assertArrayEquals(
             byteArrayOf(0x41.toByte()),
             result.packet.payload
+        )
+    }
+    @Test
+    fun parserAcceptsAes256GcmAlgorithm() {
+
+        val payload =
+            "HELLO".toByteArray(Charsets.US_ASCII)
+
+        val packet =
+            CipherBeamPacket(
+                version = CipherBeamPacket.PROTOCOL_VERSION,
+                flags = CipherBeamPacket.ALGORITHM_AES_256_GCM,
+                payload = payload
+            )
+
+        val serialized =
+            CipherBeamPacketSerializer.serialize(packet)
+
+        val result =
+            CipherBeamPacketParser.parse(serialized)
+
+        assertTrue(
+            result is CipherBeamPacketParser.Result.Success
+        )
+
+        result as CipherBeamPacketParser.Result.Success
+
+        assertEquals(
+            CipherBeamPacket.SECURITY_PROFILE_DEMO,
+            result.packet.securityProfile
+        )
+
+        assertEquals(
+            CipherBeamPacket.ALGORITHM_AES_256_GCM,
+            result.packet.algorithmId
+        )
+    }
+
+    @Test
+    fun parserRejectsUnsupportedAlgorithmId() {
+
+        val payload =
+            "HELLO".toByteArray(Charsets.US_ASCII)
+
+        val packet =
+            CipherBeamPacket(
+                version = CipherBeamPacket.PROTOCOL_VERSION,
+                flags = 0x03,
+                payload = payload
+            )
+
+        val serialized =
+            CipherBeamPacketSerializer.serialize(packet)
+
+        val result =
+            CipherBeamPacketParser.parse(serialized)
+
+        assertTrue(
+            result is CipherBeamPacketParser.Result.Failure
+        )
+
+        result as CipherBeamPacketParser.Result.Failure
+
+        assertEquals(
+            "Unsupported algorithm ID: 3",
+            result.reason
+        )
+    }
+
+    @Test
+    fun parserRejectsUnsupportedSecurityProfile() {
+
+        val payload =
+            "HELLO".toByteArray(Charsets.US_ASCII)
+
+        val packet =
+            CipherBeamPacket(
+                version = CipherBeamPacket.PROTOCOL_VERSION,
+                flags = 0x11,
+                payload = payload
+            )
+
+        val serialized =
+            CipherBeamPacketSerializer.serialize(packet)
+
+        val result =
+            CipherBeamPacketParser.parse(serialized)
+
+        assertTrue(
+            result is CipherBeamPacketParser.Result.Failure
+        )
+
+        result as CipherBeamPacketParser.Result.Failure
+
+        assertEquals(
+            "Unsupported security profile: 1",
+            result.reason
+        )
+    }
+    @Test
+    fun parserAcceptsChaCha20WithDemoProfile() {
+
+        val payload =
+            "HELLO".toByteArray(Charsets.US_ASCII)
+
+        val packet =
+            CipherBeamPacket(
+                version = CipherBeamPacket.PROTOCOL_VERSION,
+                flags =
+                    (CipherBeamPacket.SECURITY_PROFILE_DEMO shl 4) or
+                            CipherBeamPacket.ALGORITHM_CHACHA20_POLY1305,
+                payload = payload
+            )
+
+        val serialized =
+            CipherBeamPacketSerializer.serialize(packet)
+
+        val result =
+            CipherBeamPacketParser.parse(serialized)
+
+        assertTrue(
+            result is CipherBeamPacketParser.Result.Success
+        )
+
+        result as CipherBeamPacketParser.Result.Success
+
+        assertEquals(
+            CipherBeamPacket.SECURITY_PROFILE_DEMO,
+            result.packet.securityProfile
+        )
+
+        assertEquals(
+            CipherBeamPacket.ALGORITHM_CHACHA20_POLY1305,
+            result.packet.algorithmId
+        )
+    }
+
+    @Test
+    fun parserAcceptsAes256GcmWithDemoProfile() {
+
+        val payload =
+            "HELLO".toByteArray(Charsets.US_ASCII)
+
+        val packet =
+            CipherBeamPacket(
+                version = CipherBeamPacket.PROTOCOL_VERSION,
+                flags =
+                    (CipherBeamPacket.SECURITY_PROFILE_DEMO shl 4) or
+                            CipherBeamPacket.ALGORITHM_AES_256_GCM,
+                payload = payload
+            )
+
+        val serialized =
+            CipherBeamPacketSerializer.serialize(packet)
+
+        val result =
+            CipherBeamPacketParser.parse(serialized)
+
+        assertTrue(
+            result is CipherBeamPacketParser.Result.Success
+        )
+
+        result as CipherBeamPacketParser.Result.Success
+
+        assertEquals(
+            CipherBeamPacket.SECURITY_PROFILE_DEMO,
+            result.packet.securityProfile
+        )
+
+        assertEquals(
+            CipherBeamPacket.ALGORITHM_AES_256_GCM,
+            result.packet.algorithmId
+        )
+    }
+
+    @Test
+    fun parserAcceptsValidPacketWithLeadingAndTrailingNoise() {
+        val packet =
+            CipherBeamPacket(
+                version = CipherBeamPacket.PROTOCOL_VERSION,
+                flags =
+                    (CipherBeamPacket.SECURITY_PROFILE_DEMO shl 4) or
+                            CipherBeamPacket.ALGORITHM_CHACHA20_POLY1305,
+                payload = "HELLO".toByteArray()
+            )
+
+        val serialized =
+            CipherBeamPacketSerializer.serialize(packet)
+
+        val leadingNoise =
+            byteArrayOf(
+                0x7E.toByte(),
+                0x12.toByte(),
+                0x00.toByte()
+            )
+
+        val trailingNoise =
+            byteArrayOf(
+                0x55.toByte(),
+                0x33.toByte(),
+                0x99.toByte()
+            )
+
+        val data =
+            leadingNoise +
+                    serialized +
+                    trailingNoise
+
+        val result =
+            CipherBeamPacketParser.parse(data)
+
+        assertTrue(result is CipherBeamPacketParser.Result.Success)
+
+        result as CipherBeamPacketParser.Result.Success
+
+        assertEquals(
+            leadingNoise.size,
+            result.startIndex
+        )
+
+        assertEquals(
+            serialized.size,
+            result.bytesConsumed
+        )
+
+        assertEquals(
+            "HELLO",
+            result.packet.payload.toString(Charsets.US_ASCII)
+        )
+    }
+
+    @Test
+    fun parserCanParseTwoConsecutivePackets() {
+        val firstPacket =
+            CipherBeamPacket(
+                version = CipherBeamPacket.PROTOCOL_VERSION,
+                flags =
+                    (CipherBeamPacket.SECURITY_PROFILE_DEMO shl 4) or
+                            CipherBeamPacket.ALGORITHM_CHACHA20_POLY1305,
+                payload = "HELLO".toByteArray()
+            )
+
+        val secondPacket =
+            CipherBeamPacket(
+                version = CipherBeamPacket.PROTOCOL_VERSION,
+                flags =
+                    (CipherBeamPacket.SECURITY_PROFILE_DEMO shl 4) or
+                            CipherBeamPacket.ALGORITHM_AES_256_GCM,
+                payload = "WORLD".toByteArray()
+            )
+
+        val firstSerialized =
+            CipherBeamPacketSerializer.serialize(firstPacket)
+
+        val secondSerialized =
+            CipherBeamPacketSerializer.serialize(secondPacket)
+
+        val combinedData =
+            firstSerialized + secondSerialized
+
+        /*
+         * Parse the first packet.
+         */
+        val firstResult =
+            CipherBeamPacketParser.parse(combinedData)
+
+        assertTrue(
+            firstResult is CipherBeamPacketParser.Result.Success
+        )
+
+        firstResult as CipherBeamPacketParser.Result.Success
+
+        assertEquals(
+            0,
+            firstResult.startIndex
+        )
+
+        assertEquals(
+            firstSerialized.size,
+            firstResult.bytesConsumed
+        )
+
+        assertEquals(
+            "HELLO",
+            firstResult.packet.payload.toString(Charsets.US_ASCII)
+        )
+
+        assertEquals(
+            CipherBeamPacket.ALGORITHM_CHACHA20_POLY1305,
+            firstResult.packet.algorithmId
+        )
+
+        /*
+         * Start parsing immediately after packet 1.
+         */
+        val secondStart =
+            firstResult.startIndex +
+                    firstResult.bytesConsumed
+
+        val remainingData =
+            combinedData.copyOfRange(
+                secondStart,
+                combinedData.size
+            )
+
+        /*
+         * Parse the second packet.
+         */
+        val secondResult =
+            CipherBeamPacketParser.parse(remainingData)
+
+        assertTrue(
+            secondResult is CipherBeamPacketParser.Result.Success
+        )
+
+        secondResult as CipherBeamPacketParser.Result.Success
+
+        assertEquals(
+            0,
+            secondResult.startIndex
+        )
+
+        assertEquals(
+            secondSerialized.size,
+            secondResult.bytesConsumed
+        )
+
+        assertEquals(
+            "WORLD",
+            secondResult.packet.payload.toString(Charsets.US_ASCII)
+        )
+
+        assertEquals(
+            CipherBeamPacket.ALGORITHM_AES_256_GCM,
+            secondResult.packet.algorithmId
         )
     }
 }

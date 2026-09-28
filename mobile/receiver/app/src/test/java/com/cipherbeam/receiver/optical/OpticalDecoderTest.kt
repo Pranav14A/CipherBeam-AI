@@ -6,7 +6,8 @@ import org.junit.Test
 class OpticalDecoderTest {
 
     companion object {
-        private const val BIT_DURATION_NS = 200_000_000L
+        private const val BIT_DURATION_NS = 150_000_000L
+        private const val GUARD_DURATION_NS = 200_000_000L
         private const val GREEN_START_DURATION_NS = 600_000_000L
     }
 
@@ -19,10 +20,16 @@ class OpticalDecoderTest {
         redOn: Boolean,
         greenOn: Boolean
     ) {
-        decoder.feedOpticalSample(
+        val result = decoder.feedOpticalSample(
             timestampNs = timestampNs,
             redOn = redOn,
             greenOn = greenOn
+        )
+        println(
+            "TEST_SAMPLE t=$timestampNs " +
+                    "red=$redOn green=$greenOn " +
+                    "state=${result.state} " +
+                    "message='${result.message}'"
         )
     }
 
@@ -72,21 +79,21 @@ class OpticalDecoderTest {
             greenOn = false
         )
 
-        return greenOffNs + BIT_DURATION_NS
+        return greenOffNs + GUARD_DURATION_NS
     }
 
     /**
-     * Sends one complete 200 ms RED bit window.
+     * Sends samples inside one 150 ms RED bit window.
      *
-     * We provide samples at the beginning, middle and end of the
-     * window so the majority-vote logic has a clear result.
+     * The next bit's first sample will finalize the previous
+     * window. We therefore do not create an artificial sample
+     * exactly on the 150 ms boundary using the old bit value.
      */
     private fun feedBitWindow(
         decoder: OpticalDecoder,
         windowStartNs: Long,
         bit: Boolean
     ) {
-
         feed(
             decoder,
             windowStartNs,
@@ -96,33 +103,18 @@ class OpticalDecoderTest {
 
         feed(
             decoder,
-            windowStartNs + 80_000_000L,
+            windowStartNs + 75_000_000L,
             redOn = bit,
             greenOn = false
         )
 
         feed(
             decoder,
-            windowStartNs + 160_000_000L,
-            redOn = bit,
-            greenOn = false
-        )
-
-        /*
-         * This sample crosses the 200 ms boundary and causes the
-         * completed window to be finalized.
-         */
-        feed(
-            decoder,
-            windowStartNs + BIT_DURATION_NS,
+            windowStartNs + 120_000_000L,
             redOn = bit,
             greenOn = false
         )
     }
-
-    /**
-     * Sends one ASCII character MSB first.
-     */
     private fun feedAsciiByte(
         decoder: OpticalDecoder,
         windowStartNs: Long,
@@ -212,7 +204,7 @@ class OpticalDecoderTest {
          * GREEN END.
          */
         val greenEndNs =
-            timestampNs + BIT_DURATION_NS
+            timestampNs + GUARD_DURATION_NS
 
         feed(
             decoder,
@@ -246,12 +238,111 @@ class OpticalDecoderTest {
         )
     }
 
+
+    /**
+     * Sends a complete frame but deliberately leaves GREEN END ON.
+     *
+     * This allows the test to observe MESSAGE_COMPLETE before the
+     * decoder automatically re-arms when GREEN turns OFF.
+     */
+    private fun feedFrameUntilCompletion(
+        decoder: OpticalDecoder,
+        message: String
+    ): Long {
+
+        var timestampNs = 0L
+
+        /*
+         * GREEN START
+         */
+        timestampNs = feedGreenStart(
+            decoder = decoder,
+            startNs = timestampNs
+        )
+
+        /*
+         * GREEN falling edge + START GUARD
+         */
+        timestampNs = beginData(
+            decoder = decoder,
+            greenStartNs = timestampNs
+        )
+
+        /*
+         * RED DATA
+         */
+        for (character in message) {
+            timestampNs = feedAsciiByte(
+                decoder = decoder,
+                windowStartNs = timestampNs,
+                value = character.code
+            )
+        }
+
+        /*
+         * RED OFF END GUARD.
+         */
+        feed(
+            decoder,
+            timestampNs,
+            redOn = false,
+            greenOn = false
+        )
+
+        feed(
+            decoder,
+            timestampNs + 80_000_000L,
+            redOn = false,
+            greenOn = false
+        )
+
+        /*
+         * GREEN END.
+         *
+         * Keep GREEN ON so MESSAGE_COMPLETE remains observable.
+         */
+        val greenEndNs = timestampNs + GUARD_DURATION_NS
+
+        feed(
+            decoder,
+            greenEndNs,
+            redOn = false,
+            greenOn = true
+        )
+
+        feed(
+            decoder,
+            greenEndNs + 50_000_000L,
+            redOn = false,
+            greenOn = true
+        )
+
+        val completionTimestampNs = greenEndNs + 100_000_000L
+
+        val completionSnapshot = decoder.feedOpticalSample(
+            timestampNs = completionTimestampNs,
+            redOn = false,
+            greenOn = true
+        )
+
+        println(
+            "COMPLETION_RESULT " +
+                    "t=$completionTimestampNs " +
+                    "state=${completionSnapshot.state} " +
+                    "message='${completionSnapshot.message}' " +
+                    "completedMessage=${completionSnapshot.completedMessage} " +
+                    "completedBytes=${completionSnapshot.completedBytes?.joinToString()}"
+        )
+
+        return completionTimestampNs
+    }
+
     @Test
     fun decodesGreenFramedMessage() {
 
         val decoder = OpticalDecoder()
 
-        feedFrame(
+        feedFrameUntilCompletion(
             decoder = decoder,
             message = "HI"
         )
@@ -274,7 +365,7 @@ class OpticalDecoderTest {
 
         val decoder = OpticalDecoder()
 
-        feedFrame(
+        feedFrameUntilCompletion(
             decoder = decoder,
             message = "A"
         )
@@ -303,7 +394,7 @@ class OpticalDecoderTest {
          * Several RED-OFF windows are therefore valid payload
          * bits and must not be interpreted as the end of the frame.
          */
-        feedFrame(
+        feedFrameUntilCompletion(
             decoder = decoder,
             message = "A"
         )
@@ -326,7 +417,7 @@ class OpticalDecoderTest {
 
         val decoder = OpticalDecoder()
 
-        feedFrame(
+        feedFrameUntilCompletion(
             decoder = decoder,
             message = "HELLO"
         )
@@ -345,11 +436,16 @@ class OpticalDecoderTest {
     }
 
     @Test
-    fun completionRequiresExplicitAcknowledgement() {
+    fun completionAutomaticallyRearmsWhenGreenTurnsOff() {
 
         val decoder = OpticalDecoder()
 
-        feedFrame(
+        /*
+         * First transmission.
+         *
+         * GREEN remains ON, so MESSAGE_COMPLETE must be observable.
+         */
+        val greenEndLastSampleNs = feedFrameUntilCompletion(
             decoder = decoder,
             message = "X"
         )
@@ -364,7 +460,18 @@ class OpticalDecoderTest {
             decoder.snapshot().completedMessage
         )
 
-        decoder.acknowledgeCompletion()
+        /*
+         * GREEN turns OFF.
+         *
+         * The current production decoder must automatically reset
+         * and return to WAITING_FOR_START.
+         */
+        feed(
+            decoder,
+            greenEndLastSampleNs + 200_000_000L,
+            redOn = false,
+            greenOn = false
+        )
 
         assertEquals(
             OpticalDecoder.State.WAITING_FOR_START,
@@ -383,7 +490,7 @@ class OpticalDecoderTest {
     }
 
     @Test
-    fun rejectsNonPrintablePayload() {
+    fun acceptsNonPrintablePayloadAsRawBytes() {
 
         val decoder = OpticalDecoder()
 
@@ -445,9 +552,26 @@ class OpticalDecoderTest {
             greenOn = true
         )
 
+        val snapshot = decoder.snapshot()
+
         assertEquals(
-            OpticalDecoder.State.WAITING_FOR_START,
-            decoder.snapshot().state
+            OpticalDecoder.State.MESSAGE_COMPLETE,
+            snapshot.state
+        )
+
+        assertEquals(
+            null,
+            snapshot.completedMessage
+        )
+
+        assertEquals(
+            1,
+            snapshot.completedBytes?.size
+        )
+
+        assertEquals(
+            0x01.toByte(),
+            snapshot.completedBytes?.get(0)
         )
     }
 }

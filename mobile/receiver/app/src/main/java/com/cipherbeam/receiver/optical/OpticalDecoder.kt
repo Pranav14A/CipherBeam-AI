@@ -14,7 +14,7 @@ import android.util.Log
  *
  * GREEN ON  ~600 ms
  * GREEN OFF ~200 ms guard
- * RED data  8-bit bytes, MSB-first, 200 ms per bit
+ * RED data  8-bit bytes, MSB-first, 150 ms per bit
  * RED OFF   ~200 ms end guard
  * GREEN ON  ~600 ms
  * GREEN OFF
@@ -73,7 +73,7 @@ class OpticalDecoder(
          * RED must remain in the new state for this duration before
          * the decoder accepts the transition.
          */
-        private const val RED_STABILITY_DURATION_NS = 20_000_000L
+        private const val RED_STABILITY_DURATION_NS = 15_000_000L
     }
 
     private var state = State.WAITING_FOR_START
@@ -397,20 +397,27 @@ class OpticalDecoder(
          */
         if (greenOn) {
 
-            if (greenCandidateStartNs == null) {
+            val firstGreenEndSample =
+                greenCandidateStartNs == null
+
+            if (firstGreenEndSample) {
                 greenCandidateStartNs = timestampNs
                 greenCandidateSamples = 1
+
+                /*
+                 * RED is OFF during the end guard.
+                 *
+                 * Only the first GREEN-END sample advances the RED
+                 * timing window. Later GREEN confirmation samples
+                 * must not create additional RED windows.
+                 */
+                addRedSample(
+                    timestampNs = timestampNs,
+                    redOn = false
+                )
             } else {
                 greenCandidateSamples++
             }
-
-            /*
-             * RED is OFF during the end guard.
-             */
-            addRedSample(
-                timestampNs = timestampNs,
-                redOn = false
-            )
 
             if (greenCandidateSamples >= GREEN_CONFIRM_SAMPLES) {
                 completeTransmission()

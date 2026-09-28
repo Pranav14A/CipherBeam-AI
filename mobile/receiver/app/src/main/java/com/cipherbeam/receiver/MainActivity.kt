@@ -139,6 +139,10 @@ private fun ReceiverScreen() {
         mutableStateOf<CipherBeamPacket?>(null)
     }
 
+    var packetStatus by remember {
+        mutableStateOf<String?>(null)
+    }
+
     var debug by remember {
         mutableStateOf<RedLedAnalyzer.DebugSample?>(null)
     }
@@ -200,14 +204,13 @@ private fun ReceiverScreen() {
             },
 
             onPacket = { packet ->
-                /*
-                 * Packet parser has already validated the
-                 * logical packet structure.
-                 *
-                 * Phase 10 currently has no CRC validation yet,
-                 * so the CRC field is displayed as parsed.
-                 */
+            /*
+              * Packet parser has already validated the
+              * logical packet structure and CRC.
+              * Only CRC-valid packets reach this callback.
+            */
                 receivedPacket = packet
+                packetStatus = "PACKET_OK"
 
                 /*
                  * For the current plaintext Phase 10 packet,
@@ -218,7 +221,23 @@ private fun ReceiverScreen() {
                         .toString(Charsets.US_ASCII)
 
                 lastReceivedMessage = payloadText
+            },
+            onPacketFailure = { reason ->
+
+                packetStatus =
+                    when {
+                        reason.startsWith("CRC mismatch") ->
+                            "PACKET_CRC_FAIL"
+
+                        reason.startsWith("Unsupported algorithm ID") ||
+                                reason.startsWith("Unsupported security profile") ->
+                            "PACKET_METADATA_FAIL"
+
+                        else ->
+                            "PACKET_FAIL"
+                    }
             }
+
         )
 
         /*
@@ -243,6 +262,11 @@ private fun ReceiverScreen() {
 
             Text(
                 text = "Status: ${decoderState.state}",
+                color = Color.White
+            )
+
+            Text(
+                text = "Packet Status: ${packetStatus ?: "WAITING"}",
                 color = Color.White
             )
 
@@ -364,6 +388,7 @@ private fun ReceiverScreen() {
                                 }",
                     color = Color.White
                 )
+
             }
 
             if (
