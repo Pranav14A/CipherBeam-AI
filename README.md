@@ -1,799 +1,895 @@
 # CipherBeam-AI
 
-> Offline, LiFi-like optical communication using an ESP32-S3 transmitter, dual LED optical signaling, and an Android camera receiver.
+### Offline Visible-Light Communication with AI-Assisted Optical Decoding
 
-## Current Project Status
+CipherBeam-AI is an experimental **air-gapped visible-light communication system** that demonstrates encrypted-communication architecture over a physical optical channel instead of Wi-Fi, Bluetooth, or the Internet.
 
-**Development branch:** `dev`  
-**Stable branch:** `main`  
-**Current focus:** Phase 14 — end-to-end plaintext integration and demo hardening  
-**Optical bit timing:** **150 ms per bit — LOCKED FOR CURRENT DEVELOPMENT**  
-**Real encryption/decryption:** intentionally **deferred** for the current demo milestone  
-**Last stable checkpoint:** optical geometry tracking tested and merged into `main`
+The project uses a computer-controlled ESP32-S3 to transmit data through **visible LED light**, while an Android device uses its camera to observe and decode the optical signal.
+
+> **No Wi-Fi. No Bluetooth. No Internet connection is required for the optical communication channel.**
 
 ---
 
-# 1. Project Goal
+## Overview
 
-CipherBeam-AI is an experimental offline optical communication system designed to send digital messages through visible light without relying on:
+CipherBeam-AI is designed around a simple idea:
 
-- Wi-Fi
-- Bluetooth
-- Internet access
-- cellular networking during transmission
+**Can two devices communicate using nothing except visible light between them?**
 
-The current prototype uses:
-
-- ESP32-S3 as the transmitter controller
-- RED LED as the optical data carrier
-- GREEN LED as the optical control/synchronization channel
-- Android smartphone camera as the receiver
-- Kotlin + CameraX on the mobile receiver
-- OpenCV-assisted optical processing / geometry tracking on the receiver
-- FastAPI + React on the desktop transmitter side
-- USB serial communication between desktop and ESP32-S3
-
-The project is being developed in layers. The physical optical transport is kept stable while higher-level packet, reliability, UI, and later AI features are added.
-
----
-
-# 2. System Architecture
+The current system consists of:
 
 ```text
-                    PARTY A / SENDER
-
-Message
-   ↓
-Packet creation
-   ↓
-CRC / packet validation
-   ↓
-Demo security-profile UI selection
-   ↓
-FastAPI
-   ↓
-pyserial
-   ↓
-ESP32-S3
-   ↓
-RED + GREEN LEDs
-   ↓
-Visible-light optical channel
-   ↓
-Android camera
-   ↓
-CameraX
-   ↓
-OpenCV / optical analysis
-   ↓
-GREEN localization
-   ↓
-RED localization + geometry tracking
-   ↓
-OpticalDecoder
-   ↓
-Packet parser
-   ↓
-CRC validation
-   ↓
-Received plaintext message
-   ↓
-Android UI
+┌───────────────────────┐
+│   DESKTOP SENDER UI   │
+│      React + Vite     │
+└───────────┬───────────┘
+            │ HTTP
+            ▼
+┌───────────────────────┐
+│     FASTAPI BACKEND    │
+└───────────┬───────────┘
+            │ USB Serial
+            ▼
+┌───────────────────────┐
+│       ESP32-S3         │
+│                       │
+│  GREEN → CONTROL      │
+│  RED   → DATA         │
+└───────────┬───────────┘
+            │
+            │ Visible Light
+            ▼
+┌───────────────────────┐
+│    ANDROID CAMERA      │
+│      CameraX/YUV       │
+└───────────┬───────────┘
+            ▼
+┌───────────────────────┐
+│ OPTICAL DECODER       │
+│ Signal Processing     │
+│ Frame Detection       │
+└───────────┬───────────┘
+            ▼
+┌───────────────────────┐
+│ PACKET PARSER         │
+│ CRC Validation        │
+└───────────┬───────────┘
+            ▼
+┌───────────────────────┐
+│ RECEIVER DASHBOARD    │
+└───────────────────────┘
 ```
 
-### Important current decision
+---
 
-The **UI may display a selected security profile / algorithm**, but the current transmission path is intentionally **plaintext**. Real encryption and authenticated decryption will be implemented later as a separate secure phase.
+# Current Features
 
-This prevents the project from spending the remaining demo time on cryptography while the optical link and end-to-end application path are being stabilized.
+## Desktop Control Interface
+
+The desktop sender is built with:
+
+* React
+* Vite
+* TypeScript
+* CSS
+* FastAPI backend
+
+The interface provides:
+
+* Backend health monitoring
+* ESP32 hardware status
+* Serial connection information
+* Hardware ping
+* Manual LED control
+* Message transmission
+* Algorithm selection
+* Transmission status
+* Packet-flow visualization
+* Optical-channel visualization
+* Hardware diagnostics
+* Matrix/engineering diagnostics
+* Binary data visualization
+
+The UI is intentionally designed as a **cinematic optical communication control console**, rather than a generic CRUD dashboard.
 
 ---
 
-# 3. Optical Channels
+# Optical Communication Channel
 
-| Channel | Current purpose |
-|---|---|
-| GREEN | Control / synchronization / frame boundaries |
-| RED | Binary data transport |
+CipherBeam uses two optical channels:
 
-GREEN is not used as payload data.
+| LED      | Role              |
+| -------- | ----------------- |
+| 🟢 GREEN | Control / framing |
+| 🔴 RED   | Data              |
 
-RED carries the logical packet bytes as an MSB-first binary stream.
+The two channels are deliberately separated.
+
+The basic transmission sequence is:
+
+```text
+GREEN START
+     ↓
+GREEN OFF GUARD
+     ↓
+RED DATA
+     ↓
+RED OFF GUARD
+     ↓
+GREEN END
+```
+
+The system does not rely on simultaneous red and green illumination.
 
 ---
 
-# 4. Current Optical Timing
+# Optical Timing
 
-The current optical timing is deliberately kept slow enough for the smartphone camera receiver.
+The current validated optical bit duration is:
+
+```text
+150 ms per RED data bit
+```
+
+This timing is part of the currently validated optical protocol and should not be changed casually.
+
+Other current timing parameters include:
 
 ```text
 GREEN START       600 ms
-START GUARD       200 ms
-RED BIT           150 ms / bit
-END GUARD         200 ms
 GREEN END         600 ms
+OPTICAL GUARD     200 ms
+RED DATA BIT      150 ms
 ```
 
-## Timing rule
-
-**150 ms per RED bit is locked for the current development cycle.**
-
-Do not change this value while implementing the current integration work unless a reproducible physical test demonstrates that the timing itself is the problem.
-
-The project may revisit adaptive speed or a different bitrate later.
+The desktop backend calculates the expected transmission timeout from the message size and protocol overhead.
 
 ---
 
-# 5. Optical Frame Structure
+# Packet Protocol
+
+CipherBeam packets currently use the following structure:
 
 ```text
-IDLE
-  ↓
-GREEN START
-  ↓
-START GUARD
-  ↓
-RED DATA
-  ↓
-END GUARD
-  ↓
-GREEN END
-  ↓
-IDLE
+SYNC       1 byte
+VERSION    1 byte
+FLAGS      1 byte
+LENGTH     1 byte
+PAYLOAD    0–100 bytes
+CRC        2 bytes
 ```
 
-The optical frame is the **transport layer**. It is separate from the logical packet format.
+### Packet layout
 
 ```text
-GREEN/RED optical framing
-          ≠
-logical CipherBeam packet framing
+┌──────┬─────────┬───────┬────────┬─────────┬─────┐
+│ SYNC │ VERSION │ FLAGS │ LENGTH │ PAYLOAD │ CRC │
+│ 1 B  │   1 B   │  1 B  │   1 B  │ 0–100 B │ 2 B │
+└──────┴─────────┴───────┴────────┴─────────┴─────┘
 ```
 
-The GREEN channel provides the outer synchronization. The RED channel carries the packet bytes.
+### SYNC
+
+```text
+0xA5
+```
+
+### VERSION
+
+Current protocol version:
+
+```text
+0x01
+```
+
+### FLAGS
+
+The low nibble identifies the selected algorithm.
+
+Current algorithm IDs:
+
+```text
+0x01 → ChaCha20-Poly1305
+0x02 → AES-256-GCM
+```
+
+The current implementation uses these IDs as **algorithm metadata only**.
+
+The payload is currently transmitted as plaintext.
+
+Actual cryptographic encryption/decryption is intentionally not part of the current transmission implementation.
 
 ---
 
-# 6. Receiver Processing Pipeline
+# CRC
 
-The Android receiver currently processes the camera stream through the following conceptual stages:
+CipherBeam uses:
 
 ```text
-CameraX frame
-     ↓
-YUV analysis
-     ↓
-GREEN detection
-     ↓
-GREEN spatial localization
-     ↓
-RED search / localization
-     ↓
-RED geometry tracking
-     ↓
-RED/GREEN signal scoring
-     ↓
-temporal signal tracking
-     ↓
-OpticalDecoder
-     ↓
-raw packet bytes
-     ↓
-CipherBeamPacketParser
-     ↓
-CRC validation
-     ↓
-application message
+CRC-16/CCITT-FALSE
 ```
 
-The current geometry tracking work is considered sufficiently stable for the present development milestone and has been committed and merged.
+Parameters:
+
+```text
+Polynomial : 0x1021
+Initial    : 0xFFFF
+RefIn      : false
+RefOut     : false
+XorOut     : 0x0000
+```
+
+CRC coverage:
+
+```text
+VERSION + FLAGS + LENGTH + PAYLOAD
+```
+
+The `SYNC` byte is excluded from CRC calculation.
+
+CRC is transmitted in **big-endian** order.
+
+Example:
+
+```text
+A5 01 01 01 41 AE 90
+```
+
+For this packet:
+
+```text
+SYNC       = A5
+VERSION    = 01
+FLAGS      = 01
+LENGTH     = 01
+PAYLOAD    = 41
+CRC        = AE90
+```
+
+A valid packet is accepted only after CRC verification.
 
 ---
 
-# 7. Geometry Tracking Checkpoint
+# Example Packets
 
-The recent receiver work added / stabilized:
-
-- GREEN spatial localization
-- RED local search
-- RED geometry tracking relative to GREEN
-- frame-to-frame position tracking
-- tolerance to moderate camera movement
-- continued tracking when the detected RED/ GREEN dimensions vary between frames
-
-Observed behavior during physical tests included successful locking with changing ROI dimensions and preserved geometry offsets / rotation across subsequent frames.
-
-### Current decision
-
-The geometry layer is **frozen for now**.
-
-Do not keep modifying thresholds, ROI rules, or tracking logic based on isolated failures while repeated physical tests are passing. Re-open this layer only when a reproducible failure pattern appears.
-
----
-
-# 8. Optical Decoder
-
-The optical decoder is responsible only for converting the GREEN-framed RED signal stream into raw logical bytes.
-
-It should **not** perform:
-
-- encryption
-- decryption
-- CRC policy
-- UI logic
-- camera geometry decisions
-
-The intended boundary is:
-
-```text
-OpticalDecoder
-      ↓
-raw bytes
-      ↓
-PacketParser
-```
-
-This layer separation is important because later packet/security features should not require changing the camera processing stack.
-
----
-
-# 9. Logical Packet Format
-
-The current packet format is based on the following fields:
-
-```text
-┌────────┬─────────┬────────┬────────┬─────────────┬───────┐
-│ SYNC   │ VERSION │ FLAGS  │ LENGTH │ PAYLOAD     │ CRC   │
-│ 1 byte │ 1 byte  │ 1 byte │ 1 byte │ 0–100 bytes │ 2 byte│
-└────────┴─────────┴────────┴────────┴─────────────┴───────┘
-```
-
-Current protocol constants:
-
-```text
-SYNC     = 0xA5
-VERSION  = 0x01
-MAX PAYLOAD = 100 bytes
-CRC      = 2 bytes
-```
-
-Minimum logical packet size:
-
-```text
-1 + 1 + 1 + 1 + 2 = 6 bytes
-```
-
-Maximum logical packet size:
-
-```text
-1 + 1 + 1 + 1 + 100 + 2 = 106 bytes
-```
-
----
-
-# 10. Packet Layer
-
-The packet layer has been implemented separately from the camera / optical detector.
-
-Current responsibilities include:
-
-- packet data structure
-- packet serialization
-- packet parsing
-- SYNC handling
-- VERSION validation
-- payload-length validation
-- CRC field handling
-- malformed-packet rejection
-- conversion between packet objects and raw byte arrays
-
-The packet parser is intentionally independent from camera pixels and LED detection.
-
----
-
-# 11. CRC / Integrity
-
-CRC is treated as an **optical corruption detector**, not as cryptographic authentication.
-
-Current CRC convention:
-
-```text
-CRC algorithm: CRC-16/CCITT-FALSE
-Coverage: VERSION + FLAGS + LENGTH + PAYLOAD
-SYNC: excluded from CRC calculation
-CRC byte order: big-endian
-```
-
-Example for `HELLO`:
+### HELLO — no algorithm metadata
 
 ```text
 A5 01 00 05 48 45 4C 4C 4F 6D 36
 ```
 
-where:
+### HELLO — Algorithm ID 1
 
 ```text
-CRC = 0x6D36
+A5 01 01 05 48 45 4C 4C 4F D5 57
 ```
 
-The receiver must reject a packet when the received CRC does not match the calculated CRC.
+### HELLO — Algorithm ID 2
 
-### Validation tests include
+```text
+A5 01 02 05 48 45 4C 4C 4F 0D D5
+```
 
-- correct serialization / parsing
-- expected CRC for known payloads
-- corrupted CRC rejection
-- missing SYNC rejection
-- malformed packet handling
-- optical transport → packet parser integration tests
+### Single-byte payload `A`
+
+```text
+A5 01 01 01 41 AE 90
+```
+
+A successful parser result looks like:
+
+```text
+PACKET SUCCESS:
+startIndex=0
+bytesConsumed=7
+version=1
+flags=0x01
+length=1
+crc=0xae90
+```
 
 ---
 
-# 12. Reliability / Retransmission
+# Algorithm Profiles
 
-Reliability is treated as a separate layer from optical detection.
+CipherBeam currently defines two algorithm profiles.
 
-The target behavior is:
+### Algorithm 1
 
 ```text
-Transmit packet
-      ↓
-Receive packet
-      ↓
-CRC check
-      ↓
-Valid → accept
-Invalid → reject / retry according to reliability policy
+ID: 0x01
+Name: ChaCha20-Poly1305
 ```
 
-Important security/reliability rules remain:
+### Algorithm 2
 
-- corrupted packets must not be delivered as valid messages
-- CRC failure must not silently become a successful message
-- retransmission must be distinguishable from a new logical message when the full reliability protocol is enabled
+```text
+ID: 0x02
+Name: AES-256-GCM
+```
 
-For the current demo milestone, the priority is a clean one-way end-to-end path. A true optical ACK channel can be added later when a return transmitter exists on Party B.
+At the current development stage, selecting an algorithm changes the metadata carried by the packet.
+
+It does **not** perform actual encryption yet.
+
+This allows the optical protocol, packet parser, receiver routing, and UI architecture to be developed independently from the cryptographic implementation.
 
 ---
 
-# 13. Cryptography — Intentionally Deferred
+# ESP32-S3 Firmware
 
-## Real cryptography is NOT part of the current transmission path.
+The ESP32-S3 acts as the physical optical transmitter.
 
-The architecture has already identified standard authenticated-encryption options such as:
-
-- ChaCha20-Poly1305
-- AES-256-GCM
-
-Those options remain planned for the eventual secure mode.
-
-However, **the current demo does not depend on real encryption**.
-
-### Current UI-only behavior
-
-The sender UI may expose:
+Current hardware control:
 
 ```text
-Security Profile
-Algorithm selection
-Encryption status
+GPIO4 → RED LED
+GPIO5 → GREEN LED
 ```
 
-For example:
+The ESP32 receives commands from the desktop backend through USB serial.
+
+Example command:
 
 ```text
-Selected algorithm:
-ChaCha20-Poly1305
+TRANSMIT:1:HELLO
 ```
 
-but the actual current payload remains plaintext before packet transmission.
+or:
 
-### Why this is intentional
+```text
+TRANSMIT:2:HELLO
+```
 
-The project needs a stable optical + packet + application demonstration first. Real cryptography will be added after the optical pipeline is fully integrated and the demo path is stable.
+The firmware:
 
-This prevents UI presentation logic from being confused with actual cryptographic security.
+1. Receives the transmission command.
+2. Builds the CipherBeam packet.
+3. Calculates CRC.
+4. Generates the optical framing sequence.
+5. Uses the GREEN LED for control/framing.
+6. Uses the RED LED for data.
+7. Transmits the packet using the validated optical timing.
+8. Reports transmission completion over serial.
 
 ---
 
-# 14. Algorithm ID / Security Profile — Current State
+# Desktop Backend
 
-The packet architecture reserves metadata for future security selection.
+The backend is implemented using:
+
+* Python
+* FastAPI
+* pyserial
+
+Current API endpoints:
+
+### Health
+
+```http
+GET /health
+```
+
+### Hardware status
+
+```http
+GET /hardware/status
+```
+
+### Hardware ping
+
+```http
+POST /hardware/ping
+```
+
+### Manual LED control
+
+```http
+POST /hardware/led
+```
+
+### Optical transmission
+
+```http
+POST /hardware/transmit
+```
+
+The backend communicates with the ESP32-S3 through the USB serial interface.
+
+---
+
+# Android Receiver
+
+The receiver is being developed as a native Android application.
+
+Current optical receiver pipeline:
+
+```text
+CameraX
+   ↓
+ImageProxy / YUV
+   ↓
+Red / Green Detection
+   ↓
+Optical Signal Processing
+   ↓
+OpticalDecoder
+   ↓
+Raw Bytes
+   ↓
+CipherBeamPacketParser
+   ↓
+CRC Validation
+   ↓
+Valid Packet
+   ↓
+Receiver Dashboard
+```
+
+The Android receiver is designed to recover the optical signal from camera frames rather than using a conventional digital communication interface.
+
+---
+
+# Optical Decoder
+
+The optical decoder is responsible for interpreting the camera feed.
 
 Conceptually:
 
 ```text
-Security Profile
-Algorithm ID
+Camera Frame
+     ↓
+ROI Detection
+     ↓
+RED / GREEN Signal Extraction
+     ↓
+Signal Stabilization
+     ↓
+Frame / Guard Detection
+     ↓
+Bit Timing
+     ↓
+Byte Reconstruction
+     ↓
+Packet Parser
 ```
 
-These fields are currently treated as **presentation / forward-compatibility metadata only** for the demo milestone.
-
-They must not be described as providing real confidentiality until the actual AEAD implementation is connected to transmission and receiver-side authenticated decryption is active.
-
----
-
-# 15. Current Android UI
-
-The receiver UI currently has the foundation for showing:
-
-- camera preview
-- receiver state
-- optical/debug information
-- decoded message
-- packet information
-- payload length
-- CRC information
-- successful packet reception state
-
-The UI also keeps the last successfully received message visible rather than clearing it immediately when the optical decoder returns to its waiting state.
-
-The next UI work is to make the packet / CRC / transmission status feel like one coherent receiver experience.
-
----
-
-# 16. Current Desktop Sender
-
-The desktop sender stack is:
+The decoder distinguishes between:
 
 ```text
-React frontend
-      ↓
-FastAPI backend
-      ↓
-pyserial
-      ↓
-ESP32-S3
+GREEN → control/framing
+RED   → data
 ```
 
-The desktop side already has the foundation for:
-
-- health checks
-- serial connectivity
-- hardware status
-- hardware ping
-- LED control
-- optical transmission
-
-The next integration task is to make the sender's packet-level behavior and UI state match the receiver's current packet / CRC model.
+The receiver then passes reconstructed bytes to the packet parser.
 
 ---
 
-# 17. ESP32-S3 Transmitter
-
-Current transmitter responsibilities:
-
-- RED GPIO control
-- GREEN GPIO control
-- optical framing
-- packet-byte transmission
-- MSB-first bit output
-- serial command interface
-
-The ESP32 remains a deterministic optical transport device. Higher-level security logic should not be embedded into the LED timing state machine prematurely.
-
----
-
-# 18. What Has Been Completed
-
-## Hardware / transport
-
-- ESP32-S3 bring-up
-- USB serial communication
-- desktop → FastAPI → pyserial → ESP32 path
-- RED LED output
-- GREEN LED output
-- deterministic optical transmission
-
-## Mobile receiver
-
-- Android receiver application
-- CameraX
-- live camera analysis
-- RED detection
-- GREEN detection
-- optical synchronization
-- optical byte decoding
-- packet parser integration
-- GREEN localization
-- RED localization
-- geometry tracking
-- repeated physical testing
-
-## Packet / integrity
-
-- packet structure
-- packet serializer
-- packet parser
-- payload validation
-- CRC-16/CCITT-FALSE
-- CRC rejection tests
-- optical transport → packet parser test coverage
-
-## Git workflow
+# Project Structure
 
 ```text
-main = stable checkpoint
-dev  = active development
+CipherBeam-AI/
+│
+├── desktop/
+│   ├── backend/
+│   │   └── app/
+│   │
+│   └── frontend/
+│       └── src/
+│
+├── mobile/
+│   └── receiver/
+│
+├── firmware/
+│   └── esp32/
+│       └── led_control/
+│
+├── protocol/
+│
+├── ai/
+│
+├── tests/
+│
+└── docs/
 ```
 
-Current work is developed on `dev` and merged into `main` only after testing.
+---
 
-The geometry-tracking checkpoint has already been:
+# Hardware
+
+The current prototype is based around:
+
+### Transmitter
+
+* ESP32-S3
+* Red LED
+* Green LED
+* USB serial connection
+* External power where required
+
+### Receiver
+
+* Android smartphone
+* Camera
+
+The prototype hardware is intended to evolve into a dedicated physical enclosure containing the ESP32-S3, optical transmitters, power system, and camera-facing optical geometry.
+
+---
+
+# Development Environment
+
+Current development environment includes:
 
 ```text
-dev → origin/dev
-      ↓
-merged into main
-      ↓
-origin/main
+Python        3.12.x
+FastAPI       0.141.1
+uv            0.12.5
+Node.js       22.x
+npm           11.x
 ```
 
----
-
-# 19. Current Development Checkpoint
+The desktop frontend uses:
 
 ```text
-                 STATUS
-
-Optical hardware                 ✅
-Desktop ↔ ESP32                  ✅
-CameraX receiver                ✅
-RED/GREEN detection             ✅
-Geometry tracking               ✅
-Optical decoding                ✅
-Packet serializer/parser        ✅
-CRC integrity                   ✅
-Current physical testing        ✅
-
-Real encryption                 ⏸ DEFERRED
-Real authenticated decryption   ⏸ DEFERRED
-True optical ACK channel        ⏳ FUTURE
-AI pulse classification         ⏳ FUTURE
-Adaptive bitrate                ⏳ FUTURE
+React
+Vite
+TypeScript
 ```
 
 ---
 
-# 20. Current Phase — Phase 14
+# Running the Desktop Application
 
-## Phase 14 — End-to-End Plaintext Integration + Demo Hardening
+## Backend
 
-This is the active phase.
+Navigate to:
 
-### Goal
+```powershell
+cd "C:\Users\Pranav Raj Wardhan\Desktop\CipherBeam-AI\desktop\backend"
+```
 
-Produce one reliable user-visible flow:
+Start the FastAPI backend using the project's configured environment.
+
+The backend should become available at:
 
 ```text
-Desktop message
-      ↓
-Packet creation
-      ↓
-CRC
-      ↓
-ESP32
-      ↓
-RED/GREEN optical transmission
-      ↓
-Android camera
-      ↓
-Geometry tracking
-      ↓
-Optical decoding
-      ↓
-Packet parser
-      ↓
-CRC validation
-      ↓
-Plaintext message displayed
+http://localhost:8000
 ```
 
-### Phase 14 work order
-
-**14A — Sender packet integration**
-
-Make the desktop sender produce exactly the packet representation expected by the receiver.
-
-**14B — End-to-end physical packet test**
-
-Repeatedly send known messages and verify that the complete packet survives the optical path.
-
-**14C — Receiver status integration**
-
-Present packet length, CRC state, receive state, and last valid message coherently in the Android UI.
-
-**14D — UI security presentation**
-
-Allow the user to select/display the intended security algorithm/profile without claiming that the current payload is actually encrypted.
-
-**14E — Demo hardening**
-
-Test message repetition, moderate phone movement, packet rejection, and recovery after failed/invalid transmissions.
-
----
-
-# 21. What We Will Do After Phase 14
-
-## Phase 15 — Measurements / Reliability Polish
-
-Focus on measurable behavior instead of adding new complexity.
-
-Target measurements:
-
-- successful transmission count
-- failed transmission count
-- packet error rate
-- effective bitrate
-- end-to-end latency
-- usable operating distance
-- behavior under moderate camera movement
-
-The purpose is to turn the demo into something that can be demonstrated with numbers.
-
-## Phase 16 — AI Dataset + Pulse Classifier
-
-AI will be introduced only after the deterministic path is stable.
-
-The initial AI task is intentionally narrow:
+Health check:
 
 ```text
-camera signal window
-      ↓
-normalization
-      ↓
-pulse classifier
-      ↓
-P(0), P(1)
-      ↓
-symbol + confidence
+http://localhost:8000/health
 ```
 
-The AI model will be advisory only.
+---
 
-The deterministic fallback remains mandatory.
+## Frontend
 
-AI must never bypass:
+Navigate to:
 
-- packet validation
-- CRC
-- eventual AEAD authentication
+```powershell
+cd "C:\Users\Pranav Raj Wardhan\Desktop\CipherBeam-AI\desktop\frontend"
+```
 
-## Phase 17 — AI Evaluation / Advisory Integration
+Install dependencies if required:
 
-Compare AI-assisted classification against the deterministic decoder using measured test data.
+```powershell
+npm install
+```
 
-Potential evaluation criteria:
+Start the Vite development server:
 
-- symbol error rate
-- packet error rate
-- false positives
-- confidence calibration
-- improvement under selected noise conditions
-
-AI should only be retained where it solves a measurable problem.
-
-## Phase 18+ — Real Secure Mode / Advanced Features
-
-After the demo path and AI evaluation are stable, revisit the deferred secure architecture:
-
-- real ChaCha20-Poly1305 / AES-256-GCM integration
-- authenticated decryption
-- real Security Profile behavior
-- real Algorithm ID enforcement
-- session / nonce management
-- fragmentation and reassembly where required
-- secure retransmission semantics
-- stronger key-management design
-
-Only after the secure path is actually implemented should the project claim encrypted optical communication.
-
-Future optimization topics may include:
-
-- adaptive bitrate
-- advanced camera controls
-- improved robustness under difficult lighting
-- additional optical modes
-- expanded data transfer capabilities
+```powershell
+npm run dev
+```
 
 ---
 
-# 22. Deliberate Non-Goals for the Current Milestone
+# Serial Hardware
 
-The following are **not** being implemented right now unless the roadmap is explicitly changed:
+During development, the ESP32-S3 has been tested through a CH343 USB-to-serial interface.
 
-- real encryption in the transmission path
-- real authenticated decryption on the receiver
-- changing the 150 ms optical bit timing
-- unnecessary redesign of the geometry tracker
-- AI before the deterministic pipeline is stable
-- speculative threshold tuning without reproducible test evidence
-- advanced key exchange
-- complex multi-device optical ACK hardware
-
----
-
-# 23. Development Rules
-
-1. **Inspect the actual current code before editing.**
-2. Make one focused change at a time.
-3. Build immediately after code changes.
-4. Run relevant tests before committing.
-5. Perform physical tests when the change affects the optical path.
-6. Only commit tested changes.
-7. Develop on `dev`.
-8. Merge tested `dev` work into `main`.
-9. Keep `main` stable.
-10. Do not change the optical timing without explicit approval / reproducible evidence.
-11. Do not tune optical thresholds because of one isolated failure.
-12. Do not confuse UI security indicators with real cryptographic security.
-13. Keep AI advisory-only and preserve a deterministic fallback.
-
----
-
-# 24. Git Workflow
-
-Typical development cycle:
+The development configuration has used:
 
 ```text
-# active development
- git switch dev
-
-# make / test changes
-
-# stage
- git add <files>
-
-# commit
- git commit -m "<focused change>"
-
-# push
- git push origin dev
-
-# once stable, merge into main
- git switch main
- git pull origin main
- git merge dev
- git push origin main
-
-# return to development
- git switch dev
+COM3
 ```
 
-The repository should finish each stable checkpoint with a clean working tree.
+The actual COM port can differ depending on the Windows environment.
 
----
-
-# 25. Current Priority
-
-> **Finish the complete plaintext packet + CRC optical demo first.**
-
-The next coding work should improve the connection between already-working layers rather than replace them.
+The firmware configuration currently uses:
 
 ```text
-                    CURRENT PRIORITY
-
-Optical detector ────────────────┐
-                                 │
-Optical decoder ─────────────────┤
-                                 ↓
-Packet + CRC ───────────────→ END-TO-END DEMO
-                                 ↓
-                            UI integration
-                                 ↓
-                            measurements
-                                 ↓
-                               AI
-                                 ↓
-                         REAL SECURE MODE
+USB CDC On Boot: Disabled
 ```
 
 ---
 
-# 26. Important Note About Older Documentation
+# Testing
 
-Some older README / project-summary files contain earlier phase labels and earlier assumptions, including different optical timing descriptions and statements that packet / CRC / encryption work had not yet started.
+The project has been developed incrementally with hardware and protocol checkpoints.
 
-Those documents are historical snapshots and **must not be treated as the current implementation status**.
+Previously validated areas include:
 
-This README is the canonical project-status summary for the current development direction.
+* Backend health endpoint
+* Hardware connection detection
+* ESP32 serial communication
+* Backend → ESP32 command transmission
+* Manual LED control
+* RED/GREEN optical sequencing
+* Packet construction
+* CRC-16/CCITT-FALSE
+* Algorithm metadata IDs
+* Transmission completion feedback
+* Desktop transmission UI
+* Optical chamber visualization
+* Android optical decoding pipeline
+* Packet parsing and CRC validation
+
+Backend test checkpoints have also been maintained throughout development.
+
+---
+
+# Design Philosophy
+
+CipherBeam-AI is intentionally being developed as a **physical communication system**, not simply a software simulation.
+
+The architecture separates:
+
+```text
+UI
+ ↓
+Backend
+ ↓
+Hardware
+ ↓
+Optical Channel
+ ↓
+Camera
+ ↓
+Signal Processing
+ ↓
+Protocol
+ ↓
+Application
+```
+
+This separation makes it possible to independently improve:
+
+* Optical hardware
+* Signal processing
+* Packet protocol
+* Receiver algorithms
+* Cryptographic implementation
+* User interface
+* AI-assisted decoding
+
+without coupling every subsystem together.
+
+---
+
+# Security Direction
+
+The long-term goal is to support authenticated encrypted communication over the optical channel.
+
+The current architecture already reserves packet metadata for algorithm selection.
+
+Planned cryptographic profiles include:
+
+```text
+ChaCha20-Poly1305
+AES-256-GCM
+```
+
+However, the current prototype intentionally keeps the payload plaintext while the physical communication and protocol layers are stabilized.
+
+Future security work can introduce:
+
+```text
+Key management
+      ↓
+Encryption
+      ↓
+Authentication
+      ↓
+Algorithm negotiation
+      ↓
+Secure packet transmission
+```
+
+without requiring a complete redesign of the optical transport layer.
+
+---
+
+# Current Development Status
+
+### Desktop
+
+**Operational**
+
+* React/Vite sender interface
+* FastAPI backend
+* ESP32 serial communication
+* LED control
+* Optical transmission
+* Algorithm metadata selection
+* Transmission feedback
+* Engineering diagnostics
+
+### Firmware
+
+**Operational**
+
+* ESP32-S3 control
+* RED data LED
+* GREEN control LED
+* Packet generation
+* CRC generation
+* Optical transmission
+
+### Protocol
+
+**Operational**
+
+* Packet framing
+* Versioning
+* Flags
+* Algorithm IDs
+* Payload length
+* CRC validation
+
+### Android Receiver
+
+**Active development**
+
+* Camera acquisition
+* Optical signal detection
+* RED/GREEN processing
+* Optical decoding
+* Packet parsing
+* Receiver dashboard
+
+### Cryptography
+
+**Not yet implemented**
+
+Algorithm IDs currently represent metadata only.
+
+---
+
+# Roadmap
+
+## Phase 1 — Core Architecture
+
+* [x] Repository structure
+* [x] Desktop frontend
+* [x] FastAPI backend
+* [x] ESP32 serial communication
+* [x] Basic hardware control
+
+## Phase 2 — Optical Transmission
+
+* [x] RED data channel
+* [x] GREEN control channel
+* [x] Optical framing
+* [x] Packet generation
+* [x] CRC validation
+* [x] Algorithm metadata
+
+## Phase 3 — Android Receiver
+
+* [x] Camera pipeline
+* [x] Optical signal extraction
+* [x] RED/GREEN detection
+* [x] Optical decoding
+* [x] Packet parsing
+* [x] CRC validation
+
+## Phase 4 — Integrated System
+
+* [x] Desktop → FastAPI → ESP32
+* [x] Optical transmission
+* [x] Receiver pipeline
+* [x] Transmission feedback
+* [x] Desktop control interface
+
+## Phase 5 — Next Development
+
+* [ ] Improve optical reliability
+* [ ] Improve receiver synchronization
+* [ ] Improve camera movement tolerance
+* [ ] Improve signal processing
+* [ ] Complete end-to-end sender → optical → receiver testing
+* [ ] Implement actual cryptographic payload protection
+* [ ] Key management
+* [ ] Physical enclosure refinement
+* [ ] Dedicated hardware prototype
+* [ ] Performance characterization
+
+---
+
+# Important Development Constraints
+
+The following are part of the currently validated system and should not be changed casually:
+
+### Optical timing
+
+```text
+150 ms / RED data bit
+```
+
+### Optical channel roles
+
+```text
+GREEN → control/framing
+RED   → data
+```
+
+### Packet synchronization
+
+```text
+SYNC = 0xA5
+```
+
+### Protocol version
+
+```text
+VERSION = 0x01
+```
+
+### Maximum payload
+
+```text
+100 bytes
+```
+
+### CRC
+
+```text
+CRC-16/CCITT-FALSE
+```
+
+Changes to these should be treated as **protocol changes**, not ordinary UI or refactoring changes.
+
+---
+
+# Vision
+
+CipherBeam-AI explores a communication architecture where information moves through a physical optical path rather than conventional wireless networking.
+
+The goal is to evolve the prototype from:
+
+```text
+LED blinking
+```
+
+into:
+
+```text
+Reliable optical communication
+        ↓
+Structured protocol
+        ↓
+Authenticated encryption
+        ↓
+AI-assisted optical decoding
+        ↓
+A complete air-gapped communication system
+```
+
+The project combines:
+
+**Embedded Systems + Computer Vision + Communication Protocols + AI + Cybersecurity**
+
+to build a communication system from the physical layer upward.
+
+---
+
+## Author
+
+**Pranav Raj Wardhan**
+
+B.Tech — Computer Science & Engineering
+
+CipherBeam-AI is an independent experimental engineering project focused on visible-light communication, embedded systems, computer vision, and secure communication architecture.
