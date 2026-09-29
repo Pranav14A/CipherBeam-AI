@@ -1,3 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.CipherBeamReceiver" parent="android:Theme.Material.Light.NoActionBar" />
+
+    <style
+        name="Theme.CipherBeamReceiver"
+        parent="android:style/Theme.Material.NoActionBar">
+
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:statusBarColor">#05080B</item>
+
+        <item name="android:navigationBarColor">#05080B</item>
+        <item name="android:windowLightNavigationBar">false</item>
+
+        <item name="android:fontFamily">sans</item>
+
+        <item name="android:windowActionModeOverlay">true</item>
+
+    </style>
+
 </resources>

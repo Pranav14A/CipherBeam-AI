@@ -3,40 +3,72 @@ package com.cipherbeam.receiver
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.speech.tts.TextToSpeech
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Button
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableDoubleStateOf
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.cipherbeam.receiver.camera.CameraPreview
-import com.cipherbeam.receiver.camera.RedLedAnalyzer
 import com.cipherbeam.receiver.optical.OpticalDecoder
-import com.cipherbeam.receiver.packet.CipherBeamPacket
-import android.util.Log
+import com.cipherbeam.receiver.ui.OpticalWaveformSample
+import com.cipherbeam.receiver.ui.ReceiverAppStage
+import com.cipherbeam.receiver.ui.ReceiverDashboard
+import com.cipherbeam.receiver.ui.ReceiverLandingScreen
+import com.cipherbeam.receiver.ui.ReceiverUiState
+import com.cipherbeam.receiver.ui.theme.CipherBeamReceiverTheme
 import org.opencv.android.OpenCVLoader
+import java.util.Locale
+
 
 class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
         if (OpenCVLoader.initLocal()) {
-            Log.i("CipherBeamOpenCV", "OpenCV initialized successfully")
+            Log.i(
+                "CipherBeamOpenCV",
+                "OpenCV initialized successfully"
+            )
         } else {
-            Log.e("CipherBeamOpenCV", "OpenCV initialization failed")
+            Log.e(
+                "CipherBeamOpenCV",
+                "OpenCV initialization failed"
+            )
         }
 
         setContent {
-            MaterialTheme {
-                Surface(Modifier.fillMaxSize()) {
+            CipherBeamReceiverTheme {
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = MaterialTheme.colorScheme.background
+                ) {
                     ReceiverRoot()
                 }
             }
@@ -44,9 +76,17 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+
 @Composable
 private fun ReceiverRoot() {
+
     val context = LocalContext.current
+
+    var appStage by remember {
+        mutableStateOf(
+            ReceiverAppStage.LANDING
+        )
+    }
 
     var hasPermission by remember {
         mutableStateOf(
@@ -57,356 +97,535 @@ private fun ReceiverRoot() {
         )
     }
 
-    val launcher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) {
-        hasPermission = it
-    }
-
-    LaunchedEffect(Unit) {
-        if (!hasPermission) {
-            launcher.launch(Manifest.permission.CAMERA)
+    val launcher =
+        rememberLauncherForActivityResult(
+            ActivityResultContracts.RequestPermission()
+        ) {
+            hasPermission = it
         }
-    }
 
-    if (hasPermission) {
-        ReceiverScreen()
-    } else {
-        PermissionScreen {
-            launcher.launch(Manifest.permission.CAMERA)
+    when (appStage) {
+
+        ReceiverAppStage.LANDING -> {
+
+            ReceiverLandingScreen(
+                onInitializeReceiver = {
+
+                    /*
+                     * The camera is intentionally not started
+                     * until the user presses this button.
+                     */
+
+                    if (hasPermission) {
+
+                        appStage =
+                            ReceiverAppStage.RECEIVING
+
+                    } else {
+
+                        launcher.launch(
+                            Manifest.permission.CAMERA
+                        )
+                    }
+                }
+            )
+        }
+
+        ReceiverAppStage.RECEIVING -> {
+
+            if (hasPermission) {
+
+                ReceiverScreen()
+
+            } else {
+
+                PermissionScreen {
+
+                    launcher.launch(
+                        Manifest.permission.CAMERA
+                    )
+                }
+            }
         }
     }
 }
 
+
 @Composable
-private fun PermissionScreen(onRequest: () -> Unit) {
+private fun PermissionScreen(
+    onRequest: () -> Unit
+) {
     Box(
         modifier = Modifier
             .fillMaxSize()
+            .background(
+                MaterialTheme.colorScheme.background
+            )
             .padding(24.dp),
         contentAlignment = Alignment.Center
     ) {
+
         Column(
-            horizontalAlignment = Alignment.CenterHorizontally
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
         ) {
-            Text("CipherBeam AI Receiver needs camera access.")
 
-            Spacer(Modifier.height(16.dp))
+            Text(
+                text = "CIPHERBEAM",
+                style = MaterialTheme.typography.headlineMedium,
+                color = MaterialTheme.colorScheme.primary
+            )
 
-            Button(onClick = onRequest) {
+            Spacer(
+                modifier = Modifier.height(8.dp)
+            )
+
+            Text(
+                text = "Optical receiver requires camera access.",
+                color = MaterialTheme.colorScheme.onBackground
+            )
+
+            Spacer(
+                modifier = Modifier.height(20.dp)
+            )
+
+            Button(
+                onClick = onRequest
+            ) {
                 Text("Grant Camera Permission")
             }
         }
     }
 }
 
+
 @Composable
 private fun ReceiverScreen() {
 
-    /*
-     * The active OpticalDecoder is owned by CameraPreview.
-     * MainActivity receives immutable decoder snapshots.
-     */
-    var decoderState by remember {
+    val context = LocalContext.current
+
+    var uiState by remember {
         mutableStateOf(
-            OpticalDecoder.Snapshot(
-                state = OpticalDecoder.State.WAITING_FOR_START,
-                message = "",
-                lastByte = null,
-                completedMessage = null
-            )
+            ReceiverUiState()
         )
-    }
-
-    /*
-     * Keep the last successfully decoded message visible even
-     * after the decoder returns to WAITING_FOR_START.
-     *
-     * This is UI-only state and does not affect decoding.
-     */
-    var lastReceivedMessage by remember {
-        mutableStateOf<String?>(null)
-    }
-
-    /*
-     * Packet-level state.
-     *
-     * This is populated only after the optical decoder has produced
-     * a complete byte sequence and CipherBeamPacketParser has
-     * successfully validated the packet structure.
-     */
-    var receivedPacket by remember {
-        mutableStateOf<CipherBeamPacket?>(null)
-    }
-
-    var packetStatus by remember {
-        mutableStateOf<String?>(null)
-    }
-
-    var debug by remember {
-        mutableStateOf<RedLedAnalyzer.DebugSample?>(null)
-    }
-
-    var fps by remember {
-        mutableDoubleStateOf(0.0)
     }
 
     var frameCount by remember {
         mutableIntStateOf(0)
     }
 
-    var fpsStart by remember {
-        mutableLongStateOf(System.nanoTime())
+    var fps by remember {
+        mutableDoubleStateOf(0.0)
     }
 
-    Box(
-        modifier = Modifier.fillMaxSize()
+    var fpsStart by remember {
+        mutableStateOf(System.nanoTime())
+    }
+
+    /*
+     * ------------------------------------------------------------
+     * CipherBeam voice feedback
+     * ------------------------------------------------------------
+     *
+     * Uses Android's built-in TextToSpeech engine.
+     *
+     * Voice events:
+     *
+     * START_DETECTED
+     *     -> "Transmission started."
+     *
+     * PACKET_OK
+     *     -> "Decoding passed."
+     *
+     * PACKET_FAILURE
+     *     -> "Decoding failed."
+     *
+     * No optical/decoder logic is changed.
+     */
+
+    var ttsReady by remember {
+        mutableStateOf(false)
+    }
+
+    val textToSpeech = remember(context) {
+
+        TextToSpeech(
+            context
+        ) { status ->
+
+            if (status == TextToSpeech.SUCCESS) {
+
+                ttsReady = true
+
+                Log.i(
+                    "CipherBeamTTS",
+                    "TextToSpeech initialized successfully"
+                )
+
+            } else {
+
+                ttsReady = false
+
+                Log.e(
+                    "CipherBeamTTS",
+                    "TextToSpeech initialization failed"
+                )
+            }
+        }
+    }
+
+    /*
+     * Configure and clean up TTS with the lifetime of the
+     * receiver screen.
+     */
+    DisposableEffect(textToSpeech) {
+
+        try {
+
+            val languageResult =
+                textToSpeech.setLanguage(
+                    Locale.US
+                )
+
+            textToSpeech.setSpeechRate(
+                1.0f
+            )
+
+            Log.i(
+                "CipherBeamTTS",
+                "Language configured: $languageResult"
+            )
+
+        } catch (exception: Exception) {
+
+            Log.e(
+                "CipherBeamTTS",
+                "Failed to configure TextToSpeech",
+                exception
+            )
+        }
+
+        onDispose {
+
+            try {
+
+                textToSpeech.stop()
+                textToSpeech.shutdown()
+
+                Log.i(
+                    "CipherBeamTTS",
+                    "TextToSpeech shut down"
+                )
+
+            } catch (exception: Exception) {
+
+                Log.e(
+                    "CipherBeamTTS",
+                    "TTS shutdown failed",
+                    exception
+                )
+            }
+        }
+    }
+
+    /*
+     * START_DETECTED can produce several decoder snapshots.
+     *
+     * This prevents:
+     *
+     * "Transmission started."
+     * "Transmission started."
+     * "Transmission started."
+     *
+     * from being spoken repeatedly.
+     */
+    var transmissionStartAnnounced by remember {
+        mutableStateOf(false)
+    }
+
+    /*
+     * Prevent duplicate final announcements for the same
+     * transmission.
+     */
+    var decodingResultAnnounced by remember {
+        mutableStateOf(false)
+    }
+
+    fun speak(
+        message: String
     ) {
 
-        CameraPreview(
-            modifier = Modifier.fillMaxSize(),
+        if (!ttsReady) {
 
-            onBit = {
-                /*
-                 * Legacy RED-only callback.
-                 *
-                 * Phase 7 decoding no longer uses this callback.
-                 */
-            },
-
-            onDebug = { sample ->
-                debug = sample
-
-                frameCount++
-
-                val now = System.nanoTime()
-
-                val elapsed =
-                    (now - fpsStart) / 1_000_000_000.0
-
-                if (elapsed >= 1.0) {
-                    fps = frameCount / elapsed
-                    frameCount = 0
-                    fpsStart = now
-                }
-            },
-
-            onDecoderSnapshot = { snapshot ->
-                decoderState = snapshot
-
-                /*
-                 * Capture a completed printable message before
-                 * the decoder returns to WAITING_FOR_START.
-                 */
-                snapshot.completedMessage?.let { completed ->
-                    lastReceivedMessage = completed
-                }
-            },
-
-            onPacket = { packet ->
-            /*
-              * Packet parser has already validated the
-              * logical packet structure and CRC.
-              * Only CRC-valid packets reach this callback.
-            */
-                receivedPacket = packet
-                packetStatus = "PACKET_OK"
-
-                /*
-                 * For the current plaintext Phase 10 packet,
-                 * the payload is expected to contain printable ASCII.
-                 */
-                val payloadText =
-                    packet.payload
-                        .toString(Charsets.US_ASCII)
-
-                lastReceivedMessage = payloadText
-            },
-            onPacketFailure = { reason ->
-
-                packetStatus =
-                    when {
-                        reason.startsWith("CRC mismatch") ->
-                            "PACKET_CRC_FAIL"
-
-                        reason.startsWith("Unsupported algorithm ID") ||
-                                reason.startsWith("Unsupported security profile") ->
-                            "PACKET_METADATA_FAIL"
-
-                        else ->
-                            "PACKET_FAIL"
-                    }
-            }
-
-        )
-
-        /*
-         * Debug / receiver status overlay.
-         */
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .align(Alignment.TopCenter)
-                .padding(12.dp)
-                .background(
-                    Color.Black.copy(alpha = 0.68f)
-                )
-                .padding(12.dp)
-        ) {
-
-            Text(
-                text = "CipherBeam AI Receiver",
-                color = Color.White,
-                style = MaterialTheme.typography.titleMedium
+            Log.w(
+                "CipherBeamTTS",
+                "TTS not ready. Skipping: $message"
             )
 
-            Text(
-                text = "Status: ${decoderState.state}",
-                color = Color.White
-            )
-
-            Text(
-                text = "Packet Status: ${packetStatus ?: "WAITING"}",
-                color = Color.White
-            )
-
-            Text(
-                text =
-                    "Red: ${debug?.redness?.format()}  " +
-                            "Baseline: ${debug?.baseline?.format()}",
-                color = Color.White
-            )
-
-            Text(
-                text =
-                    "Red envelope: ${debug?.envelope?.format()}  " +
-                            "Threshold: ${debug?.threshold?.format()}",
-                color = Color.White
-            )
-
-            Text(
-                text =
-                    "Green: ${debug?.greenness?.format()}  " +
-                            "Baseline: ${debug?.greenBaseline?.format()}",
-                color = Color.White
-            )
-
-            Text(
-                text =
-                    "Green envelope: ${debug?.greenEnvelope?.format()}  " +
-                            "Threshold: ${debug?.greenThreshold?.format()}",
-                color = Color.White
-            )
-
-            Text(
-                text =
-                    "Red bit: ${if (debug?.bitOn == true) 1 else 0}   " +
-                            "Green: ${if (debug?.greenOn == true) 1 else 0}",
-                color = Color.White
-            )
-
-            Text(
-                text =
-                    "Analysis FPS: ${"%.1f".format(fps)}",
-                color = Color.White
-            )
-
-            Text(
-                text =
-                    "Optical lock: " +
-                            if (debug?.signalLocked == true) {
-                                "YES"
-                            } else {
-                                "NO"
-                            },
-                color = Color.White
-            )
-
-            Text(
-                text =
-                    "Analysis: ${debug?.width ?: 0} × " +
-                            "${debug?.height ?: 0}",
-                color = Color.White
-            )
+            return
         }
 
-        /*
-         * Received message / packet panel.
-         */
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .align(Alignment.BottomCenter)
-                .padding(12.dp)
-                .background(
-                    Color.Black.copy(alpha = 0.72f)
-                )
-                .padding(14.dp)
-        ) {
+        try {
 
-            Text(
-                text = "Received Message",
-                color = Color.White,
-                style = MaterialTheme.typography.labelLarge
+            textToSpeech.speak(
+                message,
+                TextToSpeech.QUEUE_FLUSH,
+                null,
+                "cipherbeam_${System.currentTimeMillis()}"
             )
 
-            Text(
-                text =
-                    lastReceivedMessage
-                        ?: decoderState.message.ifEmpty {
-                            "Waiting for GREEN START…"
-                        },
-                color = Color.White,
-                style = MaterialTheme.typography.headlineSmall
+            Log.i(
+                "CipherBeamTTS",
+                "Speaking: $message"
             )
 
-            receivedPacket?.let { packet ->
+        } catch (exception: Exception) {
 
-                Spacer(Modifier.height(10.dp))
-
-                Text(
-                    text =
-                        "Packet v${packet.version}  " +
-                                "Flags: 0x${packet.flags.toString(16).padStart(2, '0')}",
-                    color = Color.White
-                )
-
-                Text(
-                    text =
-                        "Profile: ${packet.securityProfile}  " +
-                                "Algorithm: ${packet.algorithmId}",
-                    color = Color.White
-                )
-
-                Text(
-                    text =
-                        "Payload: ${packet.length} bytes  " +
-                                "CRC: 0x${
-                                    (packet.crc ?: 0)
-                                        .toString(16)
-                                        .padStart(4, '0')
-                                }",
-                    color = Color.White
-                )
-
-            }
-
-            if (
-                decoderState.state ==
-                OpticalDecoder.State.MESSAGE_COMPLETE
-            ) {
-
-                Spacer(Modifier.height(8.dp))
-
-                Text(
-                    text = "Message received successfully.",
-                    color = Color.White
-                )
-            }
+            Log.e(
+                "CipherBeamTTS",
+                "Failed to speak: $message",
+                exception
+            )
         }
     }
-}
 
-private fun Float.format(): String {
-    return "%.3f".format(this)
+    ReceiverDashboard(
+        uiState = uiState,
+
+        cameraContent = {
+
+            CameraPreview(
+                modifier = Modifier.fillMaxSize(),
+
+                onBit = {
+                    /*
+                     * Legacy callback.
+                     *
+                     * The current optical pipeline uses
+                     * feedOpticalSample() instead.
+                     */
+                },
+
+                onDebug = { sample ->
+
+                    frameCount++
+
+                    val now =
+                        System.nanoTime()
+
+                    val elapsed =
+                        (now - fpsStart) /
+                                1_000_000_000.0
+
+                    if (elapsed >= 1.0) {
+
+                        fps =
+                            frameCount / elapsed
+
+                        frameCount = 0
+                        fpsStart = now
+                    }
+
+                    val waveformSample =
+                        OpticalWaveformSample(
+                            redOn = sample.bitOn,
+                            greenOn = sample.greenOn,
+                            timestampNs =
+                                System.nanoTime()
+                        )
+
+                    val updatedWaveform =
+                        (
+                                uiState.waveformSamples +
+                                        waveformSample
+                                ).takeLast(200)
+
+                    uiState =
+                        uiState.copy(
+                            debugSample = sample,
+                            fps = fps,
+                            waveformSamples =
+                                updatedWaveform
+                        )
+                },
+
+                onDecoderSnapshot = { snapshot ->
+
+                    val newTransmissionStarted =
+                        snapshot.state ==
+                                OpticalDecoder.State.START_DETECTED
+
+                    /*
+                     * When the decoder returns to idle,
+                     * prepare the voice guards for the next
+                     * transmission.
+                     */
+                    if (
+                        snapshot.state ==
+                        OpticalDecoder.State.WAITING_FOR_START
+                    ) {
+
+                        transmissionStartAnnounced =
+                            false
+
+                        decodingResultAnnounced =
+                            false
+                    }
+
+                    /*
+                     * Announce transmission start exactly once.
+                     */
+                    if (
+                        newTransmissionStarted &&
+                        !transmissionStartAnnounced
+                    ) {
+
+                        transmissionStartAnnounced =
+                            true
+
+                        decodingResultAnnounced =
+                            false
+
+                        speak(
+                            "Transmission started."
+                        )
+                    }
+
+                    uiState =
+                        uiState.copy(
+                            decoderState =
+                                snapshot.state,
+
+                            receivedByteCount =
+                                snapshot.receivedByteCount,
+
+                            lastReceivedMessage =
+                                snapshot.completedMessage
+                                    ?: if (
+                                        newTransmissionStarted
+                                    ) {
+                                        null
+                                    } else {
+                                        uiState.lastReceivedMessage
+                                    },
+
+                            receivedPacket =
+                                if (
+                                    newTransmissionStarted
+                                ) {
+                                    null
+                                } else {
+                                    uiState.receivedPacket
+                                },
+
+                            packetStatus =
+                                if (
+                                    newTransmissionStarted
+                                ) {
+                                    null
+                                } else {
+                                    uiState.packetStatus
+                                },
+
+                            packetFailureReason =
+                                if (
+                                    newTransmissionStarted
+                                ) {
+                                    null
+                                } else {
+                                    uiState.packetFailureReason
+                                }
+                        )
+                },
+
+                onPacket = { packet ->
+
+                    val payloadText =
+                        packet.payload.toString(
+                            Charsets.US_ASCII
+                        )
+
+                    /*
+                     * onPacket is the successful packet event.
+                     *
+                     * The existing packet parser has already
+                     * accepted the packet before this callback.
+                     */
+                    if (!decodingResultAnnounced) {
+
+                        decodingResultAnnounced =
+                            true
+
+                        speak(
+                            "Decoding passed."
+                        )
+                    }
+
+                    uiState =
+                        uiState.copy(
+                            receivedPacket =
+                                packet,
+
+                            packetStatus =
+                                "PACKET_OK",
+
+                            packetFailureReason =
+                                null,
+
+                            lastReceivedMessage =
+                                payloadText
+                        )
+                },
+
+                onPacketFailure = { reason ->
+
+                    val status =
+                        when {
+
+                            reason.startsWith(
+                                "CRC mismatch"
+                            ) ->
+                                "PACKET_CRC_FAIL"
+
+                            reason.startsWith(
+                                "Unsupported algorithm ID"
+                            ) ||
+                                    reason.startsWith(
+                                        "Unsupported security profile"
+                                    ) ->
+                                "PACKET_METADATA_FAIL"
+
+                            else ->
+                                "PACKET_FAIL"
+                        }
+
+                    /*
+                     * The exact failure reason continues to be
+                     * displayed in the existing UI.
+                     *
+                     * Voice deliberately says only:
+                     * "Decoding failed."
+                     */
+                    if (!decodingResultAnnounced) {
+
+                        decodingResultAnnounced =
+                            true
+
+                        speak(
+                            "Decoding failed."
+                        )
+                    }
+
+                    uiState =
+                        uiState.copy(
+                            packetStatus =
+                                status,
+
+                            packetFailureReason =
+                                reason
+                        )
+                }
+            )
+        }
+    )
 }
