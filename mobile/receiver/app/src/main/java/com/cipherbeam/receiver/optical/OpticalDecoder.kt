@@ -41,7 +41,8 @@ class OpticalDecoder(
         val message: String,
         val lastByte: Int? = null,
         val completedMessage: String? = null,
-        val completedBytes: ByteArray? = null
+        val completedBytes: ByteArray? = null,
+        val receivedByteCount: Int = 0
     )
 
     companion object {
@@ -738,7 +739,8 @@ class OpticalDecoder(
                 } else {
                     null
                 },
-            completedBytes = bytes
+            completedBytes = bytes,
+            receivedByteCount = decodedBytes.size
         )
     }
 }
